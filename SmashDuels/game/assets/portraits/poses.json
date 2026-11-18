@@ -1,0 +1,42 @@
+{
+ "valor": [
+  "valor_pose0.png",
+  "valor_pose1.png",
+  "valor_pose2.png",
+  "valor_pose3.png",
+  "valor_pose4.png",
+  "valor_pose5.png"
+ ],
+ "grim": [
+  "grim_pose0.png",
+  "grim_pose1.png",
+  "grim_pose2.png",
+  "grim_pose3.png",
+  "grim_pose4.png",
+  "grim_pose5.png"
+ ],
+ "astra": [
+  "astra_pose0.png",
+  "astra_pose1.png",
+  "astra_pose2.png",
+  "astra_pose3.png",
+  "astra_pose4.png",
+  "astra_pose5.png"
+ ],
+ "vesper": [
+  "vesper_pose0.png",
+  "vesper_pose1.png",
+  "vesper_pose2.png",
+  "vesper_pose3.png",
+  "vesper_pose4.png",
+  "vesper_pose5.png"
+ ],
+ "rook": [
+  "rook_pose0.png",
+  "rook_pose1.png",
+  "rook_pose2.png",
+  "rook_pose3.png",
+  "rook_pose4.png",
+  "rook_pose5.png"
+ ]
+}

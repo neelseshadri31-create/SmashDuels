@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>RIFT RUMBLE — a platform fighter</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ================= MATCH HUD ================= -->
+  <div id="hud">
+    <div id="stage-name">SKY SHRINE</div>
+    <div id="hud-timer"><span>2:30</span></div>
+    <button id="btn-pause" aria-label="Pause">❚❚</button>
+    <div id="hud-slots"></div>
+    <div id="pause-overlay">
+      <div class="pause-card">
+        <h2>PAUSED</h2>
+        <button class="mbtn primary" id="btn-resume">RESUME<small>back to the fight</small></button>
+        <button class="mbtn" id="btn-restart">RESTART<small>same fighters & rules</small></button>
+        <button class="mbtn" id="btn-quit">QUIT<small>return to title</small></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= TITLE ================= -->
+  <section class="screen active" id="screen-title">
+    <div class="menu-bg"></div>
+    <div class="center-wrap">
+      <div class="title-logo">
+        <div class="wordmark">RIFT <span>RUMBLE</span></div>
+        <div class="sub">A Platform Fighter</div>
+      </div>
+      <div class="title-meta" id="title-meta"></div>
+      <div class="main-menu">
+        <button class="mbtn primary" id="btn-vs">VS MODE<small>1–4 players · stocks · items · stages</small></button>
+        <div class="mode-grid">
+          <button class="mbtn modebtn" data-mode="classic">CLASSIC<small>5-stage gauntlet</small></button>
+          <button class="mbtn modebtn" data-mode="targets">TARGETS<small>break all 10</small></button>
+          <button class="mbtn modebtn" data-mode="homered">HOME-RUN<small>launch the bag</small></button>
+          <button class="mbtn modebtn" data-mode="multiman">MULTI-MAN<small>endless brawl</small></button>
+        </div>
+        <button class="mbtn" id="btn-records">RECORDS<small>stats, challenges & roster</small></button>
+        <button class="mbtn" id="btn-help">HOW TO PLAY<small>controls & mechanics</small></button>
+      </div>
+      <div class="keyhint">
+        <kbd>A</kbd><kbd>D</kbd> move · <kbd>W</kbd> jump · <kbd>S</kbd> crouch/fast-fall ·
+        <kbd>F</kbd> attack · <kbd>G</kbd> special · <kbd>C</kbd> shield · <kbd>V</kbd> grab<br>
+        P2: arrows + <kbd>Numpad 1</kbd> attack · <kbd>Numpad 2</kbd> special · <kbd>Numpad 3</kbd> jump · <kbd>Numpad 0</kbd> shield · <kbd>Numpad 4</kbd> grab
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CHARACTER SELECT ================= -->
+  <section class="screen" id="screen-select">
+    <div class="menu-bg"></div>
+    <div class="screen-head">
+      <h1>CHARACTER SELECT</h1><span class="sub" id="rule-summary"></span>
+      <div class="spacer"></div>
+      <button class="pill" id="add-slot">+ ADD FIGHTER</button>
+      <button class="pill" id="rem-slot">− REMOVE</button>
+      <button class="pill" id="sel-back">BACK</button>
+    </div>
+    <div class="layout">
+      <div class="panel left-panel">
+        <div class="slot-tabs" id="slot-tabs"></div>
+        <div class="fighter-grid" id="fighter-grid"></div>
+      </div>
+      <div class="panel right-panel">
+        <div class="hero-top">
+          <div class="hero-portrait-wrap" id="hero-portrait-wrap"><img id="hero-portrait" alt=""></div>
+          <div class="hero-names">
+            <h2 id="hero-name">VALOR</h2>
+            <div class="ttl" id="hero-title">THE SWORDSMAN</div>
+            <div class="arch" id="hero-arch">All-Rounder</div>
+          </div>
+        </div>
+        <div class="pal-row" id="pal-row"></div>
+        <div class="movelist" id="hero-moves"></div>
+        <div class="rowline">
+          <button class="pill" id="cpu-toggle">CPU: ON</button>
+          <div class="cpu-level-wrap" id="cpu-level-wrap">
+            <label>CPU LEVEL</label>
+            <input type="range" id="cpu-level" min="1" max="9" step="1" value="5">
+            <span id="cpu-level-val">5</span>
+          </div>
+        </div>
+        <div class="sel-summary" id="sel-summary"></div>
+        <div class="sel-actions">
+          <button class="pill" id="sel-rules">RULES</button>
+          <button class="pill" id="sel-stage">STAGE</button>
+          <button class="pill gold" id="sel-fight">FIGHT ▶</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STAGE SELECT ================= -->
+  <section class="screen" id="screen-stage">
+    <div class="menu-bg"></div>
+    <div class="screen-head"><h1>STAGE SELECT</h1><div class="spacer"></div><button class="pill" id="stage-random">RANDOM</button></div>
+    <div class="stage-grid" id="stage-grid"></div>
+    <div class="stage-actions">
+      <button class="pill" id="stage-back">BACK</button>
+      <div class="spacer"></div>
+      <button class="pill gold" id="stage-go">FIGHT ▶</button>
+    </div>
+  </section>
+
+  <!-- ================= RULES ================= -->
+  <section class="screen" id="screen-rules">
+    <div class="menu-bg"></div>
+    <div class="screen-head"><h1>RULES</h1></div>
+    <div class="rules-wrap" id="rules-body"></div>
+    <div class="stage-actions">
+      <button class="pill" id="rules-back">BACK</button>
+      <div class="spacer"></div>
+      <button class="pill gold" id="rules-go">FIGHT ▶</button>
+    </div>
+  </section>
+
+  <!-- ================= RECORDS ================= -->
+  <section class="screen" id="screen-records">
+    <div class="menu-bg"></div>
+    <div class="screen-head"><h1>RECORDS</h1><div class="spacer"></div><button class="pill" id="records-back">BACK</button></div>
+    <div class="records-wrap" id="records-body"></div>
+  </section>
+
+  <!-- ================= HOW TO PLAY ================= -->
+  <section class="screen" id="screen-help">
+    <div class="menu-bg"></div>
+    <div class="screen-head"><h1>HOW TO PLAY</h1><div class="spacer"></div><button class="pill" id="help-back">BACK</button></div>
+    <div class="help-wrap">
+      <div class="hcard">
+        <h3>THE GOAL</h3>
+        <p>There are no health bars. Every hit raises your <b>damage %</b>. The higher your %, the further you fly. Knock opponents past the invisible blast zones around the stage to take a stock.</p>
+        <p>The higher your damage, the more knockback you take — a clean smash at 120% ends a stock.</p>
+      </div>
+      <div class="hcard">
+        <h3>PLAYER 1</h3>
+        <div class="klist">
+          <div class="krow"><span>Move</span><span><kbd>A</kbd><kbd>D</kbd></span></div>
+          <div class="krow"><span>Jump / double jump</span><span><kbd>W</kbd> or <kbd>Space</kbd></span></div>
+          <div class="krow"><span>Crouch / fast-fall / drop through</span><span><kbd>S</kbd></span></div>
+          <div class="krow"><span>Attack (tilt / smash / aerial)</span><span><kbd>F</kbd></span></div>
+          <div class="krow"><span>Special moves</span><span><kbd>G</kbd> + direction</span></div>
+          <div class="krow"><span>Shield / air dodge</span><span><kbd>C</kbd></span></div>
+          <div class="krow"><span>Grab / throw</span><span><kbd>V</kbd></span></div>
+        </div>
+      </div>
+      <div class="hcard">
+        <h3>PLAYER 2</h3>
+        <div class="klist">
+          <div class="krow"><span>Move / jump</span><span><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
+          <div class="krow"><span>Attack</span><span><kbd>Num 1</kbd></span></div>
+          <div class="krow"><span>Special</span><span><kbd>Num 2</kbd></span></div>
+          <div class="krow"><span>Jump</span><span><kbd>Num 3</kbd></span></div>
+          <div class="krow"><span>Shield</span><span><kbd>Num 0</kbd></span></div>
+          <div class="krow"><span>Grab</span><span><kbd>Num 4</kbd></span></div>
+        </div>
+        <p style="margin-top:12px">Gamepads are supported for both players automatically.</p>
+      </div>
+      <div class="hcard">
+        <h3>SMASH ATTACKS</h3>
+        <p><b>Tap</b> a direction and press attack at the same time for a chargeable smash attack. Hold the attack button to charge for extra damage.</p>
+        <p><b>Tilt</b> gently (hold a direction) and press attack for a quick tilt. In the air, direction + attack gives you neutrals, forwards, backs, ups and <b>spikes</b> (down-air).</p>
+      </div>
+      <div class="hcard">
+        <h3>DEFENSE</h3>
+        <p><b>Shield</b> blocks attacks but not grabs, and it shrinks as it takes hits. If it breaks, you're stunned.</p>
+        <p><b>Shield + direction</b> rolls. <b>Shield + down</b> spot-dodges. Shield in the air is an air dodge. Press shield as you land from a tumble to <b>tech</b>.</p>
+      </div>
+      <div class="hcard">
+        <h3>RECOVERY</h3>
+        <p>Off-stage? You get your double jump plus one <b>Up + Special</b> recovery move. Touch a ledge from below to grab it, then climb, attack, roll or jump from it.</p>
+        <p>Grabs beat shields. Shields beat attacks. Attacks beat grabs.</p>
+      </div>
+      <div class="hcard">
+        <h3>ITEMS & FINAL SMASH</h3>
+        <p>Items fall onto the stage — weapons, throwables, healing, growth mushrooms, stars, traps and summon sigils. Walk into one to pick it up; press attack to swing it or press shield to throw it.</p>
+        <p>Smash the glowing <b>Smash Ball</b> until it shatters, then press <b>Special</b> to unleash your Final Smash.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RESULTS ================= -->
+  <section class="screen" id="screen-results">
+    <div class="menu-bg"></div>
+    <div class="results-wrap">
+      <div class="res-winner" id="res-winner"></div>
+      <div class="res-table" id="res-table"></div>
+      <div class="res-challenges" id="res-challenges"></div>
+      <div class="res-actions">
+        <button class="pill gold" id="btn-results-again">REMATCH</button>
+        <button class="pill" id="btn-results-char">CHARACTERS</button>
+        <button class="pill" id="btn-results-menu">TITLE</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= IN-MATCH (canvas is separate) ================= -->
+  <section class="screen" id="screen-match"></section>
+
+  <!-- ================= TOUCH ================= -->
+  <div id="touch-controls">
+    <div class="touchbtn" data-touch="left" data-toucha="1">◀</div>
+    <div class="touchbtn" data-touch="right" data-toucha="1">▶</div>
+    <div class="touchbtn" data-touch="up" data-toucha="1">▲</div>
+    <div class="touchbtn" data-touch="down" data-toucha="1">▼</div>
+    <div class="touchbtn" data-touch="attack" data-toucha="1">A</div>
+    <div class="touchbtn" data-touch="special" data-toucha="1">B</div>
+    <div class="touchbtn" data-touch="jump" data-toucha="1">JMP</div>
+    <div class="touchbtn" data-touch="shield" data-toucha="1">SHD</div>
+    <div class="touchbtn" data-touch="grab" data-toucha="1">GRB</div>
+  </div>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/data.js"></script>
+<script src="js/render.js"></script>
+<script src="js/fighter.js"></script>
+<script src="js/items.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/match.js"></script>
+<script src="js/modes.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
