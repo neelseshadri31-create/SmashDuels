@@ -4,139 +4,192 @@
 'use strict';
 
 const Sprites = (() => {
-  /* ---- raster sprite support: 6 distinct concept-art frames per fighter ---- */
-  const FRAMES = {};        // key -> [Image, ...]
-  const TINTS = {};         // key -> [ [canvas,...] per palette ]
-  const FRAME_META = {};
+  /* ============================================================
+     Roster atlases  —  assets/atlas/<key>.png + <key>.json
+     Produced by tools/slice_roster.py from roster/*_spritesheet.png:
+     ~100 hand-authored frames per fighter (idle/walk/run/jump/fall/land,
+     dash, rolls, spot-dodge, 3 taunts, jab, 3 tilts, 3 smashes, 5 aerials,
+     4 specials) plus derived reactions (hurt, launch, KO, shield-break,
+     grabbed, grab, throw, air-dodge, crouch, down, get-up, respawn).
+
+     Every frame carries an anchor (cell centre x, row baseline y) in tile
+     space, so all frames of a fighter share one origin and one scale — that
+     is what stops the old per-frame-trimmed art from jittering and from
+     "facing the wrong way" mid-animation.
+     ============================================================ */
   const KEYS = ['valor', 'grim', 'astra', 'vesper', 'rook'];
-  const NFRAMES = 6;
+  const A = {};                     // key -> {img, meta, tiles, anims, scale}
   const VARIANTS = [
-    { hue: 0,   alpha: 0.00, light: 0.00 },  // default palette
-    { hue: 200, alpha: 0.22, light: 0.06 },  // blue
-    { hue: 120, alpha: 0.26, light: 0.04 },  // green
-    { hue: 300, alpha: 0.26, light: 0.06 },  // magenta
-    { hue: 40,  alpha: 0.20, light: 0.08 },  // gold
-    { hue: 0,   alpha: 0.00, light: -0.22 }, // shadow / dark
+    { hue: 0,   alpha: 0.00, light: 0.00 },  // default palette (sheet art)
+    { hue: 200, alpha: 0.24, light: 0.05 },  // blue
+    { hue: 120, alpha: 0.28, light: 0.03 },  // green
+    { hue: 300, alpha: 0.28, light: 0.05 },  // magenta
+    { hue: 40,  alpha: 0.22, light: 0.07 },  // gold
+    { hue: 220, alpha: 0.10, light: -0.26 }, // shadow / dark
   ];
+  // drawn height per fighter, in world px (the atlas is scaled to match)
+  const TARGET_H = { valor: 112, grim: 132, astra: 108, vesper: 108, rook: 110 };
+
+  // game state -> animation.  `from`/`to` pick a sub-range of the animation as
+  // fractions, so a row authored as one long sequence can serve several states.
+  const STATE_ANIM = {
+    idle:       { anim: 'idle',  fps: 7 },
+    walk:       { anim: 'walk',  fps: 8 },
+    run:        { anim: 'run',   fps: 13 },
+    crouch:     { anim: 'crouch', fps: 5 },
+    jump:       { anim: 'jump',  from: 0.18, to: 0.62, fps: 11 },
+    doublejump: { anim: 'jump',  from: 0.5,  to: 1.0,  fps: 15 },
+    fall:       { anim: 'fall',  fps: 6 },
+    fastfall:   { anim: 'fall',  from: 0.35, fps: 11 },
+    land:       { anim: 'land',  to: 0.6,  fps: 14 },
+    shield:     { anim: 'shield', fps: 3 },
+    shieldbreak:{ anim: 'shieldbreak', fps: 9 },
+    roll:       { anim: 'rollfwd', fps: 15 },
+    spotdodge:  { anim: 'spotdodge', fps: 11 },
+    airdodge:   { anim: 'airdodge', fps: 11 },
+    hitstun:    { anim: 'hurt',  fps: 9 },
+    launch:     { anim: 'launch', fps: 7 },
+    grabbed:    { anim: 'grabbed', fps: 5 },
+    grab:       { anim: 'grab',  fps: 9 },
+    grabbing:   { anim: 'grab',  fps: 9 },
+    ledge:      { anim: 'fall',  from: 0.05, to: 0.35, fps: 2 },
+    helpless:   { anim: 'fall',  fps: 5 },
+    down:       { anim: 'down',  fps: 3 },
+    getup:      { anim: 'getup', fps: 11 },
+    respawn:    { anim: 'respawn', fps: 3 },
+    ko:         { anim: 'ko',    fps: 7 },
+    taunt:      { anim: 'taunt1', fps: 7 },
+    final:      { anim: 'usmash', fps: 9 },
+    stun:       { anim: 'hurt',  fps: 4 },
+  };
+  const MOVE_ANIM = {
+    jab: 'jab', ftilt: 'stilt', utilt: 'utilt', dtilt: 'dtilt',
+    dashattack: 'run', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
+    nair: 'nair', fair: 'fair', bair: 'bair', uair: 'uair', dair: 'dair',
+  };
+  const SPECIAL_ANIM = { n: 'nspecial', s: 'sspecial', u: 'uspecial', d: 'dspecial' };
 
   function load() {
-    let pending = KEYS.length * NFRAMES;
     for (const k of KEYS) {
-      FRAMES[k] = [];
-      TINTS[k] = [];
-      for (let i = 0; i < NFRAMES; i++) {
-        const img = new Image();
-        img.onload = () => {
-          pending--;
-          // build tinted copies once every frame for this key is ready
-          if (pending === 0 || FRAMES[k].every(f => f && f.complete)) buildTints(k);
-        };
-        img.src = `assets/frames/${k}_${i}.png`;
-        FRAMES[k][i] = img;
-      }
-      TINTS[k] = VARIANTS.map(() => []);
+      fetch(`assets/atlas/${k}.json`)
+        .then(r => (r && r.ok) ? r.json() : Promise.reject(new Error('no atlas ' + k)))
+        .then(meta => {
+          const img = new Image();
+          img.onload = () => {
+            const refH = Math.max(24, meta.refH || 64);
+            A[k] = {
+              img, meta,
+              tiles: meta.tiles,
+              anims: Object.assign({}, meta.anims, meta.derived || {}),
+              scale: (TARGET_H[k] || 108) / refH,
+              tint: {},
+            };
+          };
+          img.onerror = () => { A[k] = null; };
+          img.src = `assets/atlas/${k}.png`;
+        })
+        .catch(() => { A[k] = null; });
     }
   }
 
-  function buildTints(key) {
-    if (TINTS[key][0] && TINTS[key][0].length === NFRAMES) return;   // already built
-    VARIANTS.forEach((v, vi) => {
-      TINTS[key][vi] = [];
-      for (let i = 0; i < NFRAMES; i++) {
-        const src = FRAMES[key][i];
-        if (!src || !src.complete) return;
-        const c = document.createElement('canvas');
-        c.width = src.width; c.height = src.height;
-        const g = c.getContext('2d');
-        g.drawImage(src, 0, 0);
-        if (v.alpha > 0) {
-          g.globalCompositeOperation = 'source-atop';
-          g.fillStyle = `hsl(${v.hue} 65% 55%)`;
-          g.globalAlpha = v.alpha;
-          g.fillRect(0, 0, c.width, c.height);
-          g.globalAlpha = 1;
-          g.globalCompositeOperation = 'source-over';
-        }
-        if (v.light !== 0) {
-          g.globalCompositeOperation = 'source-atop';
-          g.fillStyle = v.light > 0 ? '#ffffff' : '#000000';
-          g.globalAlpha = Math.abs(v.light);
-          g.fillRect(0, 0, c.width, c.height);
-          g.globalAlpha = 1;
-          g.globalCompositeOperation = 'source-over';
-        }
-        TINTS[key][vi][i] = c;
+  function atlas(key) { return A[key] || null; }
+  function ready(key) { return !!A[key]; }
+
+  /* Tinted copy of a whole atlas per palette, built once per palette used. */
+  function tinted(at, vi) {
+    if (!at.tint[vi]) {
+      const v = VARIANTS[vi % VARIANTS.length];
+      const c = document.createElement('canvas');
+      c.width = at.img.width; c.height = at.img.height;
+      const g = c.getContext('2d');
+      g.drawImage(at.img, 0, 0);
+      if (v.alpha > 0) {
+        g.globalCompositeOperation = 'source-atop';
+        g.fillStyle = `hsl(${v.hue} 65% 55%)`;
+        g.globalAlpha = v.alpha;
+        g.fillRect(0, 0, c.width, c.height);
+        g.globalAlpha = 1;
+        g.globalCompositeOperation = 'source-over';
       }
-    });
+      if (v.light !== 0) {
+        g.globalCompositeOperation = 'source-atop';
+        g.fillStyle = v.light > 0 ? '#ffffff' : '#000000';
+        g.globalAlpha = Math.abs(v.light);
+        g.fillRect(0, 0, c.width, c.height);
+        g.globalAlpha = 1;
+        g.globalCompositeOperation = 'source-over';
+      }
+      at.tint[vi] = c;
+    }
+    return at.tint[vi];
   }
 
-  function ready(key) {
-    return !!(TINTS[key] && TINTS[key][0] && TINTS[key][0].length === NFRAMES);
+  /* Which animation + frame a fighter should show right now. */
+  function pickAnim(f, time) {
+    const at = atlas(f.key);
+    if (!at) return null;
+    let name = null, spec = null;
+    const act = f.action;
+    if (f.state === 'attack' && act && act.key) {
+      name = MOVE_ANIM[act.key] || 'jab';
+      spec = { phase: true };
+    } else if (f.state === 'special' && act) {
+      name = SPECIAL_ANIM[act.specialKey || act.specialDir || 'n'] || 'nspecial';
+      spec = { phase: true };
+    } else if (f.state === 'grab') {
+      name = 'grab';
+    } else if (f.state === 'grabbed') {
+      name = 'grabbed';
+    } else {
+      const cfg = STATE_ANIM[f.state];
+      if (cfg) { name = cfg.anim; spec = cfg; }
+    }
+    if (f.state === 'taunt') { name = 'taunt' + (1 + ((f.tauntIdx | 0) % 3)); spec = STATE_ANIM.taunt; }
+    if (f.state === 'roll') {
+      // roll backwards when rolling against your facing, forwards otherwise
+      const back = (f.rollDir || 0) !== 0 && (f.rollDir || 0) !== f.facing;
+      name = back ? 'rollback' : 'rollfwd';
+      spec = STATE_ANIM.roll;
+    }
+    // shieldBreak() parks the fighter in hitstun with a 180-frame stun, which
+    // is the only readable signal for "the bubble just shattered"
+    if (f.stunT > 120 && f.shieldHP <= 0) { name = 'shieldbreak'; spec = STATE_ANIM.shieldbreak; }
+    if (f.state === 'stun') { name = 'hurt'; spec = STATE_ANIM.stun; }
+    let frames = at.anims[name];
+    if (!frames || !frames.length) { frames = at.anims.idle; spec = STATE_ANIM.idle; name = 'idle'; }
+    const n = frames.length;
+    let i;
+    const from = (spec && spec.from) || 0, to = (spec && spec.to) || 1;
+    if (spec && spec.phase) {
+      // windup -> strike -> settle, mapped onto the move's real frames
+      const startup = Math.max(1, (act && act.startup) || 4);
+      const active = Math.max(1, (act && act.active) || 3);
+      const dur = Math.max(startup + active + 2, (act && act.dur) || (startup + active + 8));
+      const t = Math.max(0, f.actionT || 0);
+      let frac;
+      if (f.charging) {
+        // charged smash holds its windup with a small pulse
+        frac = 0.12 + 0.08 * (1 - Math.cos(((f.chargeT || 0) * 0.09) % (Math.PI * 2)));
+      } else if (t < startup) frac = 0.30 * (t / startup);
+      else if (t < startup + active) frac = 0.32 + 0.30 * ((t - startup) / active);
+      else frac = 0.64 + 0.36 * Math.min(1, (t - startup - active) / Math.max(1, dur - startup - active));
+      i = Math.round(frac * (n - 1));
+    } else {
+      const fps = (spec && spec.fps) || 8;
+      const span = Math.max(1, Math.round((to - from) * n));
+      const base = Math.round(from * (n - 1));
+      i = base + (Math.floor(time * fps / 1000) % span);
+      if (i >= n) i = n - 1;
+    }
+    if (i < 0) i = 0;
+    if (i > n - 1) i = n - 1;
+    return { at, name, frames, i };
   }
 
-  /* ---- which of the 6 frames to show, per game state ---- */
-  const STATE_FRAMES = {
-    idle:      [0],
-    walk:      [1, 3, 5, 3],
-    run:       [2, 4, 5, 4],
-    land:      [4],
-    jump:      [4],
-    doublejump:[2],
-    fall:      [3],
-    fastfall:  [5],
-    crouch:    [3],
-    shield:    [5],
-    roll:      [2, 3, 4],
-    spotdodge: [5],
-    airdodge:  [2],
-    hitstun:   [4],
-    launch:    [4],
-    grab:      [2],
-    grabbing:  [2],
-    grabbed:   [4],
-    ledge:     [3],
-    helpless:  [4],
-    respawn:   [0],
-    taunt:     [2, 1, 2, 3],
-    final:     [2],
-  };
-  const ATTACK_FRAMES = {
-    jab: [2, 4], ftilt: [2, 4], utilt: [2, 5], dtilt: [3, 5],
-    dashattack: [2, 4], fsmash: [5, 4], usmash: [5, 2], dsmash: [3, 5],
-    nair: [2, 4], fair: [2, 4], bair: [2, 5], uair: [2, 5], dair: [3, 4],
-  };
-
+  /* Legacy-compatible alias (used by the HUD portraits/tests). */
   function pickFrame(f, time) {
-    // attacks: windup pose -> strike pose -> settle
-    if (f.state === 'attack' && f.action) {
-      const SEQ = ATTACK_FRAMES[f.action.key] || [2, 4];
-      const a = f.action, t = f.actionT || 0;
-      const startup = a.startup || 4, active = a.active || 3;
-      if (t < startup) return SEQ[0];
-      if (t < startup + active + 2) return SEQ[1];
-      return SEQ[0];
-    }
-    if (f.state === 'special') {
-      const t = f.actionT || 0;
-      return t < 8 ? 5 : 2;
-    }
-    const seq = STATE_FRAMES[f.state];
-    if (!seq) return 0;
-    if (seq.length === 1) {
-      // idle holds ONE pose; the breathing is a bob in drawSpriteFighter,
-      // alternating between two different drawings read as flickering
-      return seq[0];
-    }
-    const speed = f.state === 'run' ? 90 : f.state === 'walk' ? 110 : 90;
-    return seq[Math.floor(time / speed) % seq.length];
-  }
-
-  function getFrameCanvas(f, time) {
-    const key = f.key;
-    if (!ready(key)) return null;
-    const vi = (f.palIdx || 0) % VARIANTS.length;
-    const idx = pickFrame(f, time);
-    return TINTS[key][vi] && TINTS[key][vi][idx] ? TINTS[key][vi][idx] : null;
+    const p = pickAnim(f, time);
+    return p ? p.i : 0;
   }
 
   /* ---------------- pose derivation ---------------- */
@@ -386,6 +439,50 @@ const Sprites = (() => {
     ctx.restore();
   }
 
+  /* ---------------- vector primitives ----------------
+   * Filled shapes used by the fallback fighter below.  These were called by
+   * drawFighter but never defined, so any fighter without raster art (the first
+   * frames before the atlases resolve, mob/assist bodies, or a failed sheet)
+   * threw a ReferenceError out of the whole render pass. */
+  function circle(ctx, x, y, r, fill) {
+    if (!(r > 0)) return;
+    ctx.save();
+    ctx.fillStyle = fill || '#ffffff';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function poly(ctx, pts, fill) {
+    if (!pts || pts.length < 3) return;
+    ctx.save();
+    ctx.fillStyle = fill || '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  /* Tapered rounded segment — the limb primitive. */
+  function capsule(ctx, x0, y0, x1, y1, r0, r1, fill) {
+    if (!Number.isFinite(x0 + y0 + x1 + y1)) return;
+    r0 = Math.max(0.2, r0 || 1); r1 = Math.max(0.2, r1 === undefined ? r0 : r1);
+    const ang = Math.atan2(y1 - y0, x1 - x0);
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    ctx.save();
+    ctx.translate(x0, y0);
+    ctx.rotate(ang);
+    ctx.fillStyle = fill || '#ffffff';
+    ctx.beginPath();
+    // arc the wide end, straight edges, arc the narrow end
+    ctx.arc(0, 0, r0, Math.PI * 0.5, -Math.PI * 0.5, false);
+    ctx.lineTo(len, -r1);
+    ctx.arc(len, 0, r1, -Math.PI * 0.5, Math.PI * 0.5, false);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   /* ---------------- fighter ---------------- */
   function drawFighter(ctx, f, time) {
     const def = f.def, s = def.stats.size * 1.34, pal = f.pal;
@@ -616,28 +713,31 @@ const Sprites = (() => {
     }
   }
 
-  /* ---- draw a fighter from the raster frame set ---- */
+  /* ---- draw a fighter from the roster atlas ----
+   *
+   * One transform for the whole frame: translate to the fighter's feet, mirror
+   * on `facing`, then blit the body tile and any baked VFX tiles at their
+   * anchor-relative offsets.  The atlas art is authored facing RIGHT, so
+   * `artFacing` is only an escape hatch for hand-swapped art (data.js sets 1).
+   * Rotations for hitstun/launch are baked into the derived tiles by the
+   * slicer, so the renderer must not lean them a second time. */
   function drawSpriteFighter(ctx, f, time) {
-    const canvas = getFrameCanvas(f, time);
-    if (!canvas) return false;
+    const sel = pickAnim(f, time);
+    if (!sel) return false;
+    const at = sel.at, ent = sel.frames[sel.i];
+    if (!ent) return false;
     const def = f.def;
-    // per-fighter height normalisation: frames are trimmed to different
-    // canvases, so scale each roster member to a consistent drawn height
-    const TARGET_H = { valor: 104, grim: 124, astra: 100, vesper: 100, rook: 104 };
-    const th = (TARGET_H[f.key] || 104) * (f.scale || 1);
-    const s = th / canvas.height;
-    const w = canvas.width * s, h = canvas.height * s;
+    const s = at.scale * (f.scale || 1);
+    const body = at.tiles[ent[0]];
+    const w = body.w * s, h = body.h * s;
 
     const moving = (f.state === 'walk' || f.state === 'run');
-    const bob = f.state === 'idle' ? Math.sin(time * 0.006 + f.id) * 1.4
-      : moving ? Math.abs(Math.sin(time * (f.state === 'run' ? 0.020 : 0.012))) * -2.6 : 0;
-    const lean = f.state === 'run' ? 0.10
-      : (f.state === 'hitstun' || f.state === 'launch') ? -0.20 : 0;
-    let squash = f.state === 'land' ? 1.07
-      : (f.state === 'jump' || f.state === 'fall' || f.state === 'doublejump') ? 0.97 : 1;
-
-    // impact reaction — smooth, not a per-frame toggle
-    if (f.hitlag > 0) squash *= 0.97;
+    const bob = f.state === 'idle' ? Math.sin(time * 0.005 + f.id) * 0.7
+      : moving ? Math.abs(Math.sin(time * (f.state === 'run' ? 0.019 : 0.012))) * -1.1 : 0;
+    const lean = f.state === 'run' ? 0.05 : 0;
+    let squash = f.state === 'land' ? 1.03 : 1;
+    if (f.hitlag > 0) squash *= 0.98;              // impact reaction, no flicker
+    if (f.state === 'roll') squash *= 1.0;
 
     // ground shadow
     if (f.groundDist >= 0 && f.groundDist < 240) {
@@ -648,6 +748,10 @@ const Sprites = (() => {
       ctx.restore();
     }
 
+    const vi = (f.palIdx || 0) % VARIANTS.length;
+    const src = vi === 0 ? at.img : tinted(at, vi);
+    const dir = f.facing * (def.artFacing === undefined ? 1 : def.artFacing);
+
     ctx.save();
     const inv = f.invincT > 0 || f.respawnT > 0 || f.buffs.star > 0 || f.spawnProtect > 0;
     if (inv && Math.floor(time / 4) % 2 === 0) ctx.globalAlpha = 0.45;
@@ -655,33 +759,26 @@ const Sprites = (() => {
 
     ctx.translate(f.x + (f.shakeX || 0), f.y + bob + (f.shakeY || 0));
 
-    // roll spin
+    // roll spin (the sliced roll rows are a 2-frame tumble; finish the arc)
     if (f.state === 'roll') {
       const k = clamp((f.actionT || 0) / ((f.action && f.action.dur) || 26), 0, 1);
       ctx.translate(0, -h * 0.5);
-      ctx.rotate(k * TAU * (f.rollDir || 1));
+      ctx.rotate(k * TAU * ((f.rollDir || f.facing) > 0 ? 1 : -1));
       ctx.translate(0, h * 0.5);
     }
-    // ledge hang: dangle below the ledge
-    if (f.state === 'ledge') {
-      ctx.translate(0, 6);
-      ctx.rotate(0.06);
-    }
+    if (f.state === 'ledge') { ctx.translate(0, 5); ctx.rotate(0.05); }
 
-    const artFaces = (def.artFacing === undefined ? -1 : def.artFacing);
-    ctx.scale(f.facing * artFaces * squash, (2 - squash));
-    ctx.rotate(lean * f.facing);
-
-    ctx.drawImage(canvas, -w / 2, -h, w, h);
-    ctx.restore();
-    ctx.filter = 'none';
+    ctx.scale(dir * squash * s, (2 - squash) * s);
+    if (lean) ctx.rotate(lean * dir);
+    blit(ctx, at, src, ent, false);
+    ctx.restore();                    // also drops the metal filter
 
     // ---- shield bubble: a readable dome, not a sprite-wide glow (a big
     //      shadowBlur turned Grim into a fireball and hid the fighter)
     if (f.shieldHP > 0) {
-      const s = h / 104;
-      const r = 40 * s * (0.58 + 0.42 * Math.max(0, f.shieldHP) / 60);
-      const cy = f.y - 50 * s;
+      const sc = h / 108;
+      const r = 40 * sc * (0.58 + 0.42 * Math.max(0, f.shieldHP) / 60);
+      const cy = f.y - 50 * sc;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       const g = ctx.createRadialGradient(f.x, cy, r * 0.25, f.x, cy, r);
@@ -695,20 +792,36 @@ const Sprites = (() => {
       ctx.restore();
     }
 
-    // white flash on hit
+    // white flash on hit — additive redraw of the same frame, no extra art
     if (f.flashT > 0) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = clamp(f.flashT / 9, 0, 1) * 0.5;
+      ctx.globalAlpha = clamp(f.flashT / 9, 0, 1) * 0.55;
       ctx.translate(f.x, f.y);
-      ctx.scale(f.facing * (def.artFacing === undefined ? -1 : def.artFacing), 1);
-      ctx.drawImage(canvas, -w / 2, -h, w, h);
+      ctx.scale(dir * s, s);
+      blit(ctx, at, src, ent, true);
       ctx.restore();
     }
     return true;
   }
 
-  return { drawFighter, getPose, load, drawSpriteFighter, ready, FRAMES, TINTS, pickFrame };
+  /* Body tile first, then any baked VFX additively so crescents glow. */
+  function blit(ctx, at, src, ent, flashPass) {
+    const draw = (part) => {
+      const t = at.tiles[part[0]];
+      if (!t) return;
+      ctx.drawImage(src, t.x, t.y, t.w, t.h, -part[1], -part[2], t.w, t.h);
+    };
+    draw(ent);
+    const fx = ent[3] || [];
+    if (!fx.length) return;
+    const prev = ctx.globalCompositeOperation;
+    if (!flashPass) ctx.globalCompositeOperation = 'lighter';
+    for (const p of fx) draw(p);
+    ctx.globalCompositeOperation = prev;
+  }
+
+  return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim, atlas, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 
 /* ============================================================

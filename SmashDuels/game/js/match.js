@@ -121,6 +121,57 @@ class Match {
     window.__match = this;
   }
 
+  /* ---------------- fighter separation ----------------
+   *
+   * The old solver pushed both fighters 50/50 and then clamped both to the
+   * stage footprint ±120.  Two failure modes showed up at the sides of the
+   * stage and scaled with the number of bodies: a fighter already against the
+   * edge could not move, so the other one kept walking through them, and once
+   * the clamp bit the pair vibrated (every frame's push was undone by the next
+   * frame's clamp).  In 4v4 / 4-player that pinned the whole crowd against an
+   * invisible wall mid-scramble.
+   *
+   * Now the correction is shared by push-resistance (grounded, heavy, shielded
+   * and ledge-hanging fighters are hard to move; hitstun fighters are easy), a
+   * blocked fighter passes its share to the other one, airborne fighters take a
+   * little momentum so a shove actually separates, and the only geometry that
+   * confines a fighter is the stage slab itself (Fighter.confine). */
+  separateFighters() {
+    const gd = this.stage.ground;
+    const fs = this.fighters;
+    const STEP = 3.0;                              // max correction per fighter
+    for (let i = 0; i < fs.length; i++) {
+      const a = fs[i];
+      if (!a || a.eliminated || a.isMob) continue;
+      for (let j = i + 1; j < fs.length; j++) {
+        const b = fs[j];
+        if (!b || b.eliminated || b.isMob) continue;
+        // a grab keeps its victim attached — don't fight that
+        if (a.grabbing === b || b.grabbing === a) continue;
+        if (a.grabbedBy || b.grabbedBy) continue;
+        const vSpan = 44 * (a.scale + b.scale);
+        if (Math.abs(a.y - b.y) > vSpan) continue;         // different heights
+        const minGap = 26 * (a.scale + b.scale) + 8;
+        const dx = b.x - a.x, adx = Math.abs(dx);
+        if (adx >= minGap) continue;
+        const dir = adx < 0.6 ? (a.x <= b.x ? 1 : -1) : (dx > 0 ? 1 : -1);
+        const overlap = minGap - adx;
+        const ra = a.pushResist(), rb = b.pushResist(), tot = (ra + rb) || 1;
+        let pa = Math.min(STEP, overlap * (rb / tot) * 0.5);
+        let pb = Math.min(STEP, overlap * (ra / tot) * 0.5);
+        const ax0 = a.x, bx0 = b.x;
+        a.x -= dir * pa; b.x += dir * pb;
+        a.confine(gd); b.confine(gd);
+        // hand a blocked fighter's leftover to the one that can move
+        const mA = Math.abs(a.x - ax0), mB = Math.abs(b.x - bx0);
+        if (mA < pa * 0.6 && mB >= pb * 0.6) { b.x += dir * Math.min(STEP, pa - mA); b.confine(gd); }
+        else if (mB < pb * 0.6 && mA >= pa * 0.6) { a.x -= dir * Math.min(STEP, pb - mB); a.confine(gd); }
+        if (!a.onGround && a.hitstun <= 0 && a.canAct()) a.vx -= dir * 0.05 * pa;
+        if (!b.onGround && b.hitstun <= 0 && b.canAct()) b.vx += dir * 0.05 * pb;
+      }
+    }
+  }
+
   sameTeam(a, b) {
     if (!this.rules.teams || !a || !b) return false;
     if (a === b) return true;
@@ -230,24 +281,8 @@ class Match {
       f.update(this);
     }
 
-    // resolve fighter overlap (soft push)
-    for (let i = 0; i < this.fighters.length; i++) {
-      for (let j = i + 1; j < this.fighters.length; j++) {
-        const a = this.fighters[i], b = this.fighters[j];
-        if (a.eliminated || b.eliminated || a.grabbedBy || b.grabbedBy) continue;
-        if (Math.abs(a.y - b.y) > 70) continue;         // different heights → ignore
-        const dx = b.x - a.x;
-        const minGap = (26 * (a.scale + b.scale)) + 8;
-        if (Math.abs(dx) < minGap) {
-          const push = (minGap - Math.abs(dx)) * 0.16 * sign(dx || 1);
-          a.x -= push; b.x += push;
-          // keep both inside the stage footprint
-          const gd2 = this.stage.ground;
-          a.x = clamp(a.x, gd2.x - 120, gd2.x + gd2.w + 120);
-          b.x = clamp(b.x, gd2.x - 120, gd2.x + gd2.w + 120);
-        }
-      }
-    }
+    // resolve fighter overlap (soft, state-weighted push)
+    this.separateFighters();
 
     // projectiles / mines / summons
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
