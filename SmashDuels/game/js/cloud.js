@@ -119,7 +119,8 @@ const CloudSave = (() => {
   }
 
   /* ---------------- session ---------------- */
-  const now = () => (typeof performance !== 'undefined' && performance.now ? Date.now() : Date.now());
+  /* Wall clock, not performance.now(): expires_at is persisted across reloads. */
+  const now = () => Date.now();
 
   function usable(s) { return !!s && !!s.access_token && (!s.expires_at || s.expires_at - now() > 30000); }
   /* Take ownership of a fresh/renewed JWT from GoTrue.  Named apart from adopt()
@@ -158,7 +159,10 @@ const CloudSave = (() => {
     try {
       return await call('/auth/v1/signup', { data: {} }, { anon: true }).then(r => keepSession(r));
     } catch (e) {
-      if (e.status === 422 || /password/i.test(e.message)) {
+      /* GoTrue has worded this several ways across versions — "Sign-ins with an
+         empty Body are not allowed", "Email or phone ...", "Password (or magic
+         link) and email are required" — all of them mean the same thing here. */
+      if (e.status === 422 || /empty body|email or phone|password|not allowed/i.test(e.message)) {
         throw Object.assign(new Error('anonymous sign-ins are disabled on the project — enable Authentication → Sign In / Providers → Anonymous'), { hint: 'anon' });
       }
       throw e;
