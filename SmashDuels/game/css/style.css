@@ -164,6 +164,16 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .hcard h3 { margin: 0 0 12px; font-size: 11px; letter-spacing: .2em; color: #8fa4bd; }
 .hcard p { font-size: 12px; line-height: 1.75; color: #9fb1c7; margin: 0 0 10px; }
 .klist { display: flex; flex-direction: column; gap: 8px; }
+/* ---- cloud saves panel (records) ---- */
+.cld { display: flex; flex-direction: column; gap: 12px; }
+.cld-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cld-note { font-size: 11px; color: #7d90a8; letter-spacing: .04em; }
+.cld-field { display: flex; align-items: center; gap: 10px; font-size: 10px; letter-spacing: .18em; color: #6f8199; }
+.cld-field span { min-width: 130px; }
+.cld-field input { flex: 1 1 220px; min-width: 0; background: #0b1119; border: 1px solid #1f2c40; border-radius: 9px;
+  padding: 9px 12px; color: #cfe0f5; font-family: ui-monospace, monospace; font-size: 11px; letter-spacing: .04em; }
+.cld-field input:focus { outline: none; border-color: #3f5f8a; }
+
 .krow { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #a9bbd0; }
 .krow kbd { background: #121a26; border: 1px solid #24334a; border-bottom-width: 3px; border-radius: 6px; padding: 3px 8px; font-family: ui-monospace, monospace; font-size: 11px; color: #cfe0f5; }
 

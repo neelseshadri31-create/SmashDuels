@@ -280,8 +280,87 @@ const UI = (() => {
       <div class="rec"><h3>ROSTER</h3>
         <div class="rosterrow">${FIGHTER_KEYS.map(k => `<div class="rchip ${s.unlocked.includes(k) ? '' : 'locked'}" style="--c:${FIGHTERS[k].color}"><img src="assets/portraits/${k}_base.png"><b>${FIGHTERS[k].name}</b></div>`).join('')}</div>
       </div>
+      ${buildCloudPanel()}
       <p class="hint">Earn Rift Coins by completing challenges. All fighters are unlocked from the start — the coin system tracks mastery progress.</p>`;
+    wireCloudPanel();
     show('screen-records');
+  }
+
+  /* ---- Cloud saves (Settings → js/cloud.js) ---- */
+  function cloudState() {
+    try { return (typeof CloudSave !== 'undefined' && CloudSave) ? CloudSave.state() : null; } catch (e) { return null; }
+  }
+  const CLOUD_LABEL = { off: 'OFF', idle: 'SYNCED', syncing: 'SYNCING…', error: 'NOT SYNCED' };
+
+  function buildCloudPanel() {
+    if (typeof CloudSave === 'undefined' || !CloudSave) return '';
+    const st = cloudState() || { enabled: false, configured: false };
+    const cfg = CloudSave.config();
+    const when = st.lastSyncAt ? new Date(st.lastSyncAt).toLocaleString() : 'never';
+    const note = st.enabled
+      ? `${CLOUD_LABEL[st.status] || st.status}${st.detail ? ' · ' + st.detail : ''} · rev ${st.rev || 0} · last sync ${when}`
+      : st.configured
+        ? 'Turn it on to push this save to your Supabase project and pull it on any other device.'
+        : 'Paste your project URL and publishable (anon) key to enable cross-device saves.';
+    return `
+      <div class="rec" id="cloud-panel">
+        <h3>CLOUD SAVES</h3>
+        <div class="cld">
+          <div class="cld-row">
+            <button class="pill ${st.enabled ? 'on' : ''}" id="cloud-toggle">${st.enabled ? 'SYNCED TO CLOUD' : 'LOCAL ONLY'}</button>
+            <span class="cld-note">${note}</span>
+          </div>
+          <label class="cld-field"><span>PROJECT URL</span><input id="cloud-url" type="url" placeholder="https://xxxxxxxx.supabase.co" value="${cfg.url || ''}" autocomplete="off" spellcheck="false"></label>
+          <label class="cld-field"><span>PUBLISHABLE KEY</span><input id="cloud-key" type="text" placeholder="${cfg.key ? 'saved — type to replace it' : 'sb_publishable_… (or the legacy anon key)'}" autocomplete="off" spellcheck="false"></label>
+          <div class="cld-row">
+            <button class="pill" id="cloud-sync">SYNC NOW</button>
+            <button class="pill" id="cloud-forget">FORGET THIS DEVICE</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  let cloudUnsub = null;
+  function refreshCloudPanel() {
+    const host = document.getElementById('cloud-panel');
+    if (!host) return;
+    if (cloudUnsub) { try { cloudUnsub(); } catch (e) { } cloudUnsub = null; }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildCloudPanel();
+    const fresh = tmp.firstElementChild;
+    if (!fresh) return;
+    if (host.replaceWith) host.replaceWith(fresh); else host.parentElement.replaceChild(fresh, host);
+    wireCloudPanel();
+  }
+
+  function wireCloudPanel() {
+    if (typeof CloudSave === 'undefined' || !CloudSave) return;
+    const $ = sel => document.querySelector(sel);
+    const on = (sel, ev, fn) => { const n = $(sel); if (n) n.addEventListener(ev, fn); };
+    on('#cloud-toggle', 'click', () => {
+      const cfg = CloudSave.config();
+      if (!cfg.url || !cfg.key) { AUDIO.sfx('back'); return; }
+      const next = !cfg.enabled;
+      CloudSave.saveConfig({ enabled: next });
+      if (next) CloudSave.syncNow().catch(() => { });
+      AUDIO.sfx('menu');
+      refreshCloudPanel();
+    });
+    on('#cloud-sync', 'click', () => { AUDIO.sfx('menu'); CloudSave.syncNow().catch(() => { }); setTimeout(refreshCloudPanel, 1200); });
+    on('#cloud-forget', 'click', () => { AUDIO.sfx('back'); CloudSave.disconnect(); refreshCloudPanel(); });
+    for (const [sel, field] of [['#cloud-url', 'url'], ['#cloud-key', 'key']]) {
+      const node = $(sel);
+      if (!node) continue;
+      node.addEventListener('change', () => {
+        const v = node.value.trim();
+        if (!v) return;                                  // untouched field, leave it alone
+        CloudSave.saveConfig({ [field]: v });
+        AUDIO.sfx('menu');
+        refreshCloudPanel();
+      });
+    }
+    const st = cloudState();
+    if (st && st.enabled && CloudSave.onChange) cloudUnsub = CloudSave.onChange(() => { try { refreshCloudPanel(); } catch (e) { } });
   }
 
   function hideResults() { show('screen-match'); }
@@ -808,6 +887,7 @@ window.RR = {
 addEventListener('DOMContentLoaded', () => {
   Sprites.load();
   UI.boot();
+  if (typeof CloudSave !== 'undefined' && CloudSave) CloudSave.boot();
   Game.init(document.getElementById('game-canvas'));
   // first interaction unlocks audio
   const unlock = () => { AUDIO.init(); AUDIO.resume(); if (SAVE.data.settings.music) AUDIO.startMusic(); removeEventListener('pointerdown', unlock); removeEventListener('keydown', unlock); };

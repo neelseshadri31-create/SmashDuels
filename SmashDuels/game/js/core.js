@@ -233,7 +233,12 @@ const SAVE = {
     for (const k of ['valor', 'grim', 'astra', 'vesper', 'rook']) if (!SAVE.data.unlocked.includes(k)) SAVE.data.unlocked.push(k);
     return SAVE.data;
   },
-  save() { try { localStorage.setItem(SAVE.KEY, JSON.stringify(SAVE.data)); } catch (e) { } },
+  save() {
+    try { localStorage.setItem(SAVE.KEY, JSON.stringify(SAVE.data)); } catch (e) { }
+    // Optional cross-device mirror (see js/cloud.js).  When cloud saves are off
+    // this costs one boolean test; it can never block or break the local write.
+    try { if (typeof CloudSave !== 'undefined' && CloudSave) CloudSave.queue(); } catch (e) { }
+  },
   stat(key, inc = 1) {
     SAVE.data.stats[key] = (SAVE.data.stats[key] || 0) + inc;
     SAVE.save();
