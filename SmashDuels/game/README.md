@@ -118,10 +118,24 @@ The engine runs headless in node — no browser, no canvas (also from the projec
 ```bash
 node tools/simtest.js       # physics, stage collision, facing, state machine
 node tools/atlascheck.js    # atlases + the sprite renderer
+node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline
 ```
 
-Both boot `js/core.js … js/match.js` (and `js/render.js` for the atlas suite) inside a stubbed
-DOM, so the code under test is the shipped code. Pass a substring to filter, `V=1` for stacks.
+All three boot the shipped files (`js/core.js … js/match.js`, plus `js/render.js` for the atlas
+suite and `js/cloud.js` for the sync suite) inside a stubbed DOM, so the code under test is the
+code that runs in the browser. `cloudtest.js` also stubs `fetch` with a server that speaks the
+same protocol as the Postgres function in `supabase/migrations/`, so both sides of the wire are
+covered without a project. Pass a substring to filter, `V=1` for stacks.
+
+## Cloud saves (optional)
+
+Progress lives in `localStorage` (`js/core.js` → `SAVE`). `js/cloud.js` can additionally mirror
+it to one Supabase row per player so a second device picks up where the first left off —
+unlocks, Rift Coins, stats, records, challenges. It is off until you paste a project URL and
+publishable key in **RECORDS → CLOUD SAVES**, it never blocks play, and every failure path
+(offline, wrong key, project paused, 500) degrades to the local save. See
+[`../supabase/README.md`](../supabase/README.md) for the schema and the one dashboard toggle it
+needs.
 
 ## Files
 
@@ -138,14 +152,19 @@ game/
   js/match.js       match orchestration, camera, knockback resolution
   js/modes.js       Classic, Targets, Home-Run, Multi-Man
   js/ui.js          screens, HUD, main loop, debug hooks
+  js/cloud.js       optional cross-device save sync (see above)
   assets/atlas/     {key}.png + {key}.json — packed animation atlases (generated)
-  assets/frames/    legacy 6-frame set, no longer loaded
 
 tools/
   slice_roster.py   roster sheets → atlas + animation meta
   harness.js        headless boot (stub DOM/canvas/audio) shared by the suites
   simtest.js        simulation tests        · node tools/simtest.js
   atlascheck.js     atlas + renderer tests  · node tools/atlascheck.js
+  cloudtest.js      save-sync tests         · node tools/cloudtest.js
+
+supabase/
+  README.md         project setup, what is stored, the sync contract
+  migrations/       player_saves + save_sync (applied, kept in step with this branch)
 ```
 
 `window.RR.step(n)` and `window.RR.makeAllCPU()` exist for automated testing.
