@@ -30,44 +30,242 @@ const Sprites = (() => {
   // drawn height per fighter, in world px (the atlas is scaled to match)
   const TARGET_H = { valor: 112, grim: 132, astra: 108, vesper: 108, rook: 110 };
 
-  // game state -> animation.  `from`/`to` pick a sub-range of the animation as
-  // fractions, so a row authored as one long sequence can serve several states.
+  /* ============================================================
+     ANIMATION
+     ------------------------------------------------------------
+     One clock and one model, shared by the sprite path and the vector fallback.
+     Three rules, each here because the previous version broke it:
+
+     1. Time is GAME TICKS (f.animT), never milliseconds.  A row used to advance
+        on floor(wallClock * fps / 1000), so animation speed was decoupled from
+        the simulation: a metal-slowed fighter kept cycling its legs at full
+        speed, a throttled tab drifted, and two draws in one tick could disagree.
+        The clock now advances at most once per game tick — which is also what
+        makes the whole layer assertable.
+     2. Grounded movement is stride-synced: the cycle advances by distance
+        travelled, so the feet appear to grip the deck instead of skating.
+     3. An attack is anticipation | strike | follow-through, pinned to the move's
+        own startup / active / recovery — never to a fraction of its length.  The
+        strike tile is the frame whose art reaches furthest (measured by the
+        slicer, meta.strike) and it is HELD for exactly the ticks the hitbox is
+        live.  Measured on the old model: 19 of 65 roster moves never showed their
+        strike frame while hitting, and one tile was held for 25 ticks on average.
+        That is "the animations are slow and nothing connects", quantified.
+
+     Spec fields:
+       anim    row name in the atlas
+       step    ticks per tile (default 6)
+       stride  px travelled per tile — overrides step for grounded movement,
+               clamped to [min, max] ticks per tile so a crawl never strobes
+       once    play to the end of the range and hold, instead of looping
+       from/to sub-range of a row as fractions, so one long row can serve
+               several states
+       hold    pin to the last tile in range; `pulse` adds a breathing wobble
+       fit     play the row exactly once across action.dur
+     ============================================================ */
   const STATE_ANIM = {
-    idle:       { anim: 'idle',  fps: 7 },
-    walk:       { anim: 'walk',  fps: 8 },
-    run:        { anim: 'run',   fps: 13 },
-    crouch:     { anim: 'crouch', fps: 5 },
-    jump:       { anim: 'jump',  from: 0.18, to: 0.62, fps: 11 },
-    doublejump: { anim: 'jump',  from: 0.5,  to: 1.0,  fps: 15 },
-    fall:       { anim: 'fall',  fps: 6 },
-    fastfall:   { anim: 'fall',  from: 0.35, fps: 11 },
-    land:       { anim: 'land',  to: 0.6,  fps: 14 },
-    shield:     { anim: 'shield', fps: 3 },
-    shieldbreak:{ anim: 'shieldbreak', fps: 9 },
-    roll:       { anim: 'rollfwd', fps: 15 },
-    spotdodge:  { anim: 'spotdodge', fps: 11 },
-    airdodge:   { anim: 'airdodge', fps: 11 },
-    hitstun:    { anim: 'hurt',  fps: 9 },
-    launch:     { anim: 'launch', fps: 7 },
-    grabbed:    { anim: 'grabbed', fps: 5 },
-    grab:       { anim: 'grab',  fps: 9 },
-    grabbing:   { anim: 'grab',  fps: 9 },
-    ledge:      { anim: 'fall',  from: 0.05, to: 0.35, fps: 2 },
-    helpless:   { anim: 'fall',  fps: 5 },
-    down:       { anim: 'down',  fps: 3 },
-    getup:      { anim: 'getup', fps: 11 },
-    respawn:    { anim: 'respawn', fps: 3 },
-    ko:         { anim: 'ko',    fps: 7 },
-    taunt:      { anim: 'taunt1', fps: 7 },
-    final:      { anim: 'usmash', fps: 9 },
-    stun:       { anim: 'hurt',  fps: 4 },
+    idle:        { anim: 'idle',        step: 7 },
+    /* Stride length in px of ground per frame of the cycle, not ticks: 17/21 meant
+       a walk held each pose for seven or eight ticks (~8 fps) and looked like it
+       was playing in slow motion while the fighter slid along.  14 and 17 put both
+       cycles at 10-12 fps for the light end of the roster and 2.5-4 for a sprint,
+       which is what "running" and "walking" are supposed to sound like. */
+    walk:        { anim: 'walk',        stride: 14, min: 3, max: 11 },
+    run:         { anim: 'run',         stride: 17, min: 2, max: 8 },
+    /* There is no skid row on any sheet (the artist drew a turn as a brace), so a
+       pivot borrows the crouch pose — planted, low, held — rather than the old
+       "run cycle, backwards" that read as a moonwalk.  `pulse` keeps it breathing
+       so a held turn is never a freeze frame. */
+    turn:        { anim: 'crouch',      hold: 1, pulse: 0.45, fallback: 'idle' },
+    crouch:      { anim: 'crouch',      hold: 1, pulse: 0.5 },
+    jump:        { anim: 'jump',        step: 4, to: 0.8, once: 1 },
+    doublejump:  { anim: 'jump',        step: 3, from: 0.55, once: 1 },
+    fall:        { anim: 'fall',        hold: 1, pulse: 0.18 },
+    fastfall:    { anim: 'fall',        step: 4, from: 0.4, once: 1 },
+    land:        { anim: 'land',        step: 2, to: 0.8, once: 1 },
+    shield:      { anim: 'shield',      hold: 1, pulse: 0.7 },
+    shieldbreak: { anim: 'shieldbreak', step: 3, once: 1 },
+    roll:        { anim: 'rollfwd',     fit: 1 },
+    spotdodge:   { anim: 'spotdodge',   step: 3, once: 1 },
+    airdodge:    { anim: 'airdodge',    step: 3, once: 1 },
+    hitstun:     { anim: 'hurt',        step: 3 },
+    launch:      { anim: 'launch',      step: 2 },
+    grabbed:     { anim: 'grabbed',     step: 6 },
+    grab:        { anim: 'grab',        step: 3, once: 1 },
+    grabbing:    { anim: 'grab',        hold: 1, pulse: 1.4 },
+    ledge:       { anim: 'fall',        step: 10, to: 0.4 },
+    helpless:    { anim: 'fall',        step: 6 },
+    down:        { anim: 'down',        hold: 1 },
+    getup:       { anim: 'getup',       step: 4, once: 1 },
+    respawn:     { anim: 'respawn',     step: 5, once: 1 },
+    ko:          { anim: 'ko',          step: 3, once: 1 },
+    taunt:       { anim: 'taunt1',      step: 5, once: 1 },
+    final:       { anim: 'usmash',      step: 4 },
+    stun:        { anim: 'hurt',        step: 5 },
+    dash:        { anim: 'dash',        step: 3, once: 1 },
   };
+  /* Moves and specials only name the row — pickAnim plays it by phase.
+     `dashattack` used to borrow the run cycle, i.e. a 38-tick lunge drawn as a
+     jog, and the sliced `dash` row was referenced by nothing.  A dash attack now
+     plays the strike row (so the hit window has strike art under it) and the dash
+     row plays during the dash burst itself, which is where the lunge reads.
+     `stilt` is the shared side-swing row the slicer recovers as one sequence. */
   const MOVE_ANIM = {
     jab: 'jab', ftilt: 'stilt', utilt: 'utilt', dtilt: 'dtilt',
-    dashattack: 'run', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
+    dashattack: 'stilt', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
     nair: 'nair', fair: 'fair', bair: 'bair', uair: 'uair', dair: 'dair',
   };
   const SPECIAL_ANIM = { n: 'nspecial', s: 'sspecial', u: 'uspecial', d: 'dspecial' };
+  const DEFAULT_STEP = 6;
+  const STALL_PX = 0.45;          // px/tick below which a stride is not happening
+  const TAU2 = Math.PI * 2;
+
+  /* One clock per fighter, keyed on the row being played: switching rows restarts
+     it, staying on a row advances it at most once per game tick.  Held in a
+     WeakMap so nothing about it leaks into save data or the fighter's own state. */
+  const clocks = new WeakMap();
+  function clockFor(f, name, spec) {
+    let c = clocks.get(f);
+    if (!c) { c = { name: null, t: 0, p: 0, tick: -1 }; clocks.set(f, c); }
+    const tick = f.animT | 0;
+    if (c.name !== name) { c.name = name; c.t = 0; c.p = 0; c.tick = tick; return c; }
+    if (c.tick === tick) return c;                       // same tick, same frame
+    const d = tick - c.tick;
+    c.tick = tick;
+    if (d <= 0) { c.t = 0; c.p = 0; return c; }          // animT reset: respawn, land
+    if (f.hitlag > 0) return c;                          // impact freeze holds the pose
+    c.t += d;
+    /* Stride sync: the cycle advances with the ground, not with the clock.  Below
+       STALL_PX/tick a fighter is not putting a foot down, so nothing advances —
+       that is what stops a 0.3 px drift while easing to a stop from playing a
+       walk cycle in place.  Above it, the clamp keeps a crawl from strobing and a
+       dash from spinning the legs faster than the art can read. */
+    if (spec.stride) {
+      const px = Math.abs(f.vx || 0);
+      if (px > STALL_PX) {
+        const ticks = clamp(spec.stride / px, spec.min || 2, spec.max || 14);
+        c.p += d / ticks;
+      }
+    }
+    return c;
+  }
+
+  /* Which tile a row should show: loop, hold, once, or fit an action's length. */
+  function rowIndex(c, spec, frames, actionT, actionDur) {
+    const n = frames.length;
+    const from = Math.round((spec.from || 0) * (n - 1));
+    const to = Math.round((spec.to === undefined ? 1 : spec.to) * (n - 1));
+    const span = Math.max(1, to - from + 1);        // inclusive: a 6-frame row shows 6 frames
+    if (spec.hold) return clamp(to, 0, n - 1);     // the settled frame, not the lead-in
+    const step = Math.max(1, spec.step || DEFAULT_STEP);
+    let i;
+    if (spec.once) i = from + Math.floor(c.t / step);
+    else if (spec.fit) i = from + Math.floor(clamp(actionT / Math.max(1, actionDur), 0, 0.999) * span);
+    else if (spec.stride) i = from + (Math.floor(c.p) % span);
+    else i = from + ((Math.floor(c.t / step) % span + span) % span);
+    if (spec.rev && i > from && i <= to) i = to - (i - from);
+    return clamp(i, 0, n - 1);
+  }
+
+  /* Attacks: anticipation -> strike (held across the whole active window) ->
+     follow-through.  `k`, the strike tile, comes from the art itself: the frame
+     of the row that reaches furthest in the direction of the blow. */
+  function attackIndex(f, frames, geo) {
+    const a = f.action || {};
+    const n = frames.length;
+    /* `geo` is meta.strike[row]: which tile of the row actually lands the blow,
+       measured from the art.  Frames are authored in time order, so everything
+       before k is anticipation and everything after is follow-through. */
+    const k = clamp(geo ? geo.k : Math.round((n - 1) * 0.62), 0, n - 1);
+    const wind = clamp(n > 2 && geo ? geo.wind : Math.max(0, k - 1), 0, n - 1);
+    const startup = Math.max(1, a.startup | 0 || 4);
+    const active = Math.max(1, a.active | 0 || 3);
+    const dur = Math.max(startup + active, a.dur | 0 || startup + active + 8);
+    const t = Math.max(0, f.actionT | 0);
+    if (f.charging) return wind;                    // a charge holds the pulled-back pose
+    if (t < startup) {
+      if (!k) return n > 1 ? wind : 0;              // the blow is frame 0: wind up on the last frame
+      const lead = k;                               // tiles before the strike
+      const step = Math.max(1, Math.floor((startup - 1) / lead));
+      return clamp(Math.floor(t / step), 0, k - 1);
+    }
+    if (t < startup + active) return k;             // the hit window IS the strike
+    const rec = Math.max(1, dur - startup - active);
+    const tail = n - 1 - k;
+    if (tail > 0) {
+      const step = Math.max(1, Math.floor(rec / (tail + 1)));
+      return clamp(k + 1 + Math.floor((t - startup - active) / step), k + 1, n - 1);
+    }
+    /* The strike is the last frame the row drew (a jab's extension IS the end of
+       its sequence), so there is no follow-through art to play.  Holding the
+       extended pose for the whole recovery is precisely what made every attack
+       look like it ended late; relax back through the earlier frames instead,
+       and let attackSwing carry the last bit. */
+    if (n <= 1) return 0;
+    const back = Math.max(1, k - wind);
+    const step = Math.max(1, Math.floor(rec / (back + 1)));
+    return clamp(k - 1 - Math.floor((t - startup - active) / step), wind, k - 1);
+  }
+
+  /* Roughly a third of the roster has a single frame for its smashes and its
+     down-air (LOG-14: the sheets pack those rows as one big pose, and the slicer
+     cannot invent what the artist did not draw).  One tile cannot lean back and
+     snap forward by itself, so the swing is synthesised: a procedural anticipation
+     / follow-through applied on top of the sprite, timed by the same windows as
+     the tiles and the hitbox.  Rows that do have art to play get a fifth of it —
+     enough to give the blow weight, not enough to fight the drawing. */
+  function attackSwing(f, amp) {
+    const ph = attackPhase(f);
+    const A = amp;
+    /* `sx` is a squash-stretch on top of the pose: below 1 the figure is wound up
+       narrow and tall, at 1.1 it is flung long and flat.  Cartoon smear, and the
+       only tool available for a row the sheets give us as one tile — which is most
+       of the heavy attacks (LOG-14).  Applied to the whole body, it reads as the
+       blow leaving the wind-up rather than as a scaling bug as long as it stays
+       inside roughly ±12%. */
+    if (f.charging) {
+      const c = clamp((f.chargeT | 0) / 26, 0, 1);
+      return { lean: (-0.08 - 0.14 * c) * A, dx: -5.4 * c * A, dy: 1.4 * c * A, sq: 1 - 0.05 * c * A, sx: 1 - 0.05 * c * A };
+    }
+    if (ph.phase === 0) {
+      const w = eased(ph.p) * A;
+      return { lean: -0.24 * w, dx: -11 * w, dy: -1.1 * w, sq: 1 + 0.04 * w, sx: 1 - 0.09 * w };
+    }
+    if (ph.phase === 1) {
+      return { lean: 0.15 * A, dx: 14 * A, dy: -1.0 * A, sq: 1 - 0.03 * A, sx: 1 + 0.10 * A };
+    }
+    const w = (1 - eased(ph.p)) * A;                       // eases back, never past neutral
+    return { lean: 0.15 * w, dx: 14 * w, dy: -1.0 * w, sq: 1, sx: 1 + 0.06 * w };
+  }
+
+  /* Baked VFX is painted into the same tile as the pose it belongs to, so a smash
+     with one frame of art carries its full crescent from tick 0 — which is most of
+     why the heavy attacks read as a still image that suddenly has a sword in it.
+     The effect layers are gated to the move's own timing instead: they build
+     through the wind-up, hit full strength exactly when the hitbox opens, and fade
+     through recovery.  Glow and hitbox start on the same tick.
+     Returns a 0..1 alpha for the frame's effect layers. */
+  function vfxGate(f) {
+    const a = f.action;
+    if (!a || a.type !== 'move' || f.state !== 'attack') return 1;   // specials, grabs: their own art
+    if (f.charging) return 0.18 + 0.72 * clamp((f.chargeT | 0) / 26, 0, 1);
+    const ph = attackPhase(f);
+    if (ph.phase === 0) return 0.10 + 0.42 * eased(ph.p);
+    if (ph.phase === 1) return 1;
+    return Math.max(0.26, 1 - 0.72 * eased(ph.p));
+  }
+
+  function attackPhase(f) {
+    const a = f.action || {};
+    const startup = Math.max(1, a.startup | 0 || 4);
+    const active = Math.max(1, a.active | 0 || 3);
+    const dur = Math.max(startup + active, a.dur | 0 || startup + active + 8);
+    const t = Math.max(0, f.actionT | 0);
+    if (f.charging) return { phase: 0, p: 1 };
+    if (t < startup) return { phase: 0, p: t / startup };
+    if (t < startup + active) return { phase: 1, p: (t - startup) / active };
+    return { phase: 2, p: clamp((t - startup - active) / Math.max(1, dur - startup - active), 0, 1) };
+  }
 
   function load() {
     for (const k of KEYS) {
@@ -77,13 +275,21 @@ const Sprites = (() => {
           const img = new Image();
           img.onload = () => {
             const refH = Math.max(24, meta.refH || 64);
-            A[k] = {
+            const A_ = {
               img, meta,
               tiles: meta.tiles,
               anims: Object.assign({}, meta.anims, meta.derived || {}),
+              unit: refH,
               scale: (TARGET_H[k] || 108) / refH,
               tint: {},
+              desRows: new Set(meta.desmerged || []),   // rows re-cut from merged strips
+              strike: {},          // row -> { k, wind }  which tile is the blow
+              box: {},             // row -> [x0, y0, x1, y1] ink extents, local px
+              bodyBox: {},         // the same rows measured without baked VFX
+              neutral: null,       // the resting silhouette, the reference for all of it
             };
+            measure(A_);
+            A[k] = A_;
           };
           img.onerror = () => { A[k] = null; };
           img.src = `assets/atlas/${k}.png`;
@@ -93,7 +299,218 @@ const Sprites = (() => {
   }
 
   function atlas(key) { return A[key] || null; }
+
+  /* ---------------- art-derived geometry ----------------
+     The slicer crops every tile tight to its ink, so a tile's rectangle *is*
+     the silhouette of that drawing: no extra measurement pass is needed, and
+     the boxes stay true whenever the sheets are re-sliced.  From those rects we
+     read two things per animation row:
+
+       box[row][i]   the frame's drawn extent, in fighter-local px at scale 1
+                     (x right = the facing side, y down from the feet) — body
+                     tile unioned with any baked VFX layer, because a drawn
+                     crescent is part of what the player judges the swing by;
+       strike[row]   the frame that reaches furthest in the direction of the
+                     blow (that is the pose whose hitbox must be live), plus the
+                     frame that reaches least, used as the anticipation tile.
+
+     The strike tile is what the hit window is pinned to, so the animation and
+     the hitbox come from the same measurement and cannot drift apart. */
+  /* Which way a row's blow travels, as [axis, sign]: axis 0 = horizontal,
+     1 = vertical, 2 = either side; sign is the direction along that axis (tile y
+     grows downward, so -1 is up). */
+  const ROW_DIR = [
+    [/^b/, [0, -1]],                     // bair: the reach is behind you
+    [/^u/, [1, -1]],                     // utilt / usmash / uair / uspecial
+    [/^d/, [1, 1]],                      // dtilt / dsmash / dair / dspecial
+    [/^n/, [2, 0]],                      // nair / nspecial: both sides count
+  ];
+  function rowDir(name) {
+    for (const [re, d] of ROW_DIR) if (re.test(name)) return d;
+    return [0, 1];                       // forward: jab, tilts, smashes, fair, dash
+  }
+
+  function rectOf(at, parts) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, any = false;
+    for (const part of parts) {
+      if (!part) continue;                   // a malformed entry must not throw here
+      const [tid, ax, ay, pad] = part;
+      const t = at.tiles[tid];
+      if (!t) continue;
+      any = true;
+      /* A tile drawn at (-ax, -ay) puts its ink from (-ax, -ay) to (w-ax, h-ay).
+         `pad` = [empty rows above the ink, empty rows below it]: a tile can be
+         taller than its drawing so every frame of a row shares one baseline
+         (tools/atlas_desmerge.py re-cuts merged strips that way) while the box kept
+         measuring the ink rather than the band. */
+      const py0 = pad ? pad[0] : 0, py1 = pad ? pad[1] : 0;
+      x0 = Math.min(x0, -ax); y0 = Math.min(y0, -ay + py0);
+      x1 = Math.max(x1, t.w - ax); y1 = Math.max(y1, t.h - ay - py1);
+    }
+    return !any || x1 <= x0 || y1 <= y0 ? null : [x0, y0, x1, y1];
+  }
+
+  /* `body` is the figure alone, `all` adds any baked VFX layer (crescents,
+     trailing arcs).  The plausibility test reads the body — a wide `all` is
+     usually a legitimate arc, while a wide *body* is a merged strip the slicer
+     could not split — and the geometry reads `all`, because what a player judges
+     a swing by is the whole drawing. */
+  function frameBox(at, ent) {
+    const part = [ent[0], ent[1], ent[2], ent[5] || null];
+    const body = rectOf(at, [part]);
+    const all = rectOf(at, [part].concat(ent[3] || []));
+    return all && body ? { body, all } : null;
+  }
+
+  /* A tile only carries usable geometry if it looks like ONE pose.  Rows the
+     slicer could not split come out as one wide short strip (LOG-14: about a
+     dozen attack rows across the roster, valor/grim `dsmash` being the worst at
+     ~4x the body height in width) — measuring those would hand a merged contact
+     sheet to the collision code, so they are rejected and the move keeps its
+     authored box. */
+  function usable(at, b, name) {
+    if (!b) return false;
+    const w = b[2] - b[0], h = b[3] - b[1];
+    if (name && at.desRows && at.desRows.has(name)) {
+      /* Rows tools/atlas_desmerge.py re-cut out of a merged strip.  Their cells
+         are tight ink crops, so a wide cell is a real effect sweep — which is the
+         whole point of the swing, not an unsplit montage — and the montage test
+         above would throw the strike frame away.  Bounded by the strip's own span
+         instead, so anything still unsplit stays rejected. */
+      return w <= 3.4 * at.unit && h <= 2.6 * at.unit;
+    }
+    return w <= 2.2 * Math.max(h, 0.55 * at.unit) && w <= 2.4 * at.unit && h <= 2.6 * at.unit;
+  }
+
+  function measure(at) {
+    for (const name in at.anims) {
+      const fl = at.anims[name];
+      if (!fl || !fl.length) continue;
+      const boxes = fl.map((ent) => {
+        const b = frameBox(at, ent);
+        return b && usable(at, b.body, name) ? b.all : null;
+      });
+      at.box[name] = boxes;
+      /* The same row measured without any baked VFX.  A drawn crescent is part of
+         what the player judges the swing by, so it counts as a hit — but it is not
+         a limb, so it must not count as something you can be hit *through*.  The
+         hurtbox reads this copy, the hitbox reads `box`. */
+      at.bodyBox[name] = fl.map((ent) => {
+        const b = frameBox(at, ent);
+        return b && usable(at, b.body, name) ? b.body : null;
+      });
+      const d = rowDir(name);
+      /* Reach is signed, and "further along the blow" always wins.  The vertical
+         axis has to negate: the frame that paints furthest UP is the one with the
+         most negative top edge, and reading b[1] straight crowned the frame that
+         reaches *least* as the strike — so every up-tilt and up-air held a tucked
+         arm for the entire hit window while the live box was out at the top. */
+      const reach = (b) => {
+        if (!b) return -1e9;
+        if (d[0] === 2) return Math.max(b[2], -b[0]);   // either side counts
+        if (d[0] === 1) return d[1] > 0 ? b[3] : -b[1]; // vertical: low or high
+        return d[1] > 0 ? b[2] : -b[0];                  // horizontal: front or back
+      };
+      let k = 0, w = 0, best = -1e9, worst = 1e9;
+      boxes.forEach((b, i) => {
+        const r = reach(b);
+        if (r > best) { best = r; k = i; }
+        if (r < worst) { worst = r; w = i; }
+      });
+      at.strike[name] = { k, wind: w, reach: best, poses: boxes.reduce((n2, b) => n2 + (b ? 1 : 0), 0) };
+    }
+    // the widest and narrowest single resting frames: a hurtbox is allowed to be
+    // narrower than the art (what the art shows as a resting weapon is not a
+    // limb), but it must sit between those two references
+    at.neutralMax = (at.box.idle || []).reduce((acc, b) => (b && (!acc || (b[2] - b[0]) > (acc[2] - acc[0])) ? b : acc), null);
+    at.neutralMin = (at.box.idle || []).reduce((acc, b) => (b && (!acc || (b[2] - b[0]) < (acc[2] - acc[0])) ? b : acc), at.neutralMax);
+    at.neutralBody = (at.bodyBox.idle || []).reduce((acc, b) => (b ? [
+      Math.min(acc ? acc[0] : 1e9, b[0]), Math.min(acc ? acc[1] : 1e9, b[1]),
+      Math.max(acc ? acc[2] : -1e9, b[2]), Math.max(acc ? acc[3] : -1e9, b[3]),
+    ] : acc), null);
+    at.neutral = (at.box.idle || []).reduce((acc, b) => (b ? [
+      Math.min(acc ? acc[0] : 1e9, b[0]), Math.min(acc ? acc[1] : 1e9, b[1]),
+      Math.max(acc ? acc[2] : -1e9, b[2]), Math.max(acc ? acc[3] : -1e9, b[3]),
+    ] : acc), null);
+  }
+
+  /* The drawn extension of an attack frame that sticks out past the resting
+     silhouette, in fighter-local px at scale 1 — the part of the picture that
+     reads as "the blade".  Null when the atlas has no row for this animation,
+     which is what makes the authored rectangle the fallback. */
+  function artReach(key, anim, i, mode) {
+    const at = A[key];
+    if (!at) return null;
+    const body = mode === 'body';
+    const boxes = body ? at.bodyBox && at.bodyBox[anim] : at.box && at.box[anim];
+    if (!boxes) return null;
+    const b = boxes[clamp(i | 0, 0, boxes.length - 1)] || boxes.find(Boolean);
+    const n = body ? at.neutralBody : at.neutral;
+    if (!b) return null;                        // merged/unusable tile: no art geometry
+    const sc = at.scale;
+    return {
+      x0: b[0] * sc, y0: b[1] * sc, x1: b[2] * sc, y1: b[3] * sc,
+      silhouette: (n || [0, 0, 0, 0]).map((v, j) => v * sc),
+      // how far each edge paints past the resting silhouette, in the same units
+      over: [
+        n ? Math.max(0, (n[0] - b[0])) * sc : 0,   // past the back
+        n ? Math.max(0, (n[1] - b[1])) * sc : 0,   // above the head
+        n ? Math.max(0, (b[2] - n[2])) * sc : 0,   // past the blade tip
+        n ? Math.max(0, (b[3] - n[3])) * sc : 0,   // below the feet
+      ].map((v) => Math.round(v * 10) / 10),
+    };
+  }
+
+  /* The rectangle a move's authored box becomes once the drawing gets a vote:
+     each edge is pushed out by however far that frame paints beyond the resting
+     silhouette, and never pulled in — so re-slicing the sheets can lengthen a
+     swing but cannot silently nerf one, and a box never grows over the body
+     itself (which is how you get a phantom point-blank trade).  Returns the
+     authored rectangle untouched when there is no usable art for the frame. */
+  function attackBox(key, anim, i, b) {
+    const art = artReach(key, anim, i);
+    const base = { x0: b.x, x1: b.x + b.w, y0: b.y, y1: b.y + b.h, art: null };
+    if (!art) return base;
+    /* Grow the box only toward where the blow travels — never backwards, never
+       sideways for a horizontal swing.  Valor's side smash bakes a trailing
+       crescent that paints well behind the fighter, and a hitbox that followed it
+       would turn a forward smash into a 220px swing that hits you for backing in. */
+    const d = rowDir(anim);
+    let fx = 0, bx = 0, fy = 0, by = 0;
+    if (d[0] === 0) { if (d[1] > 0) fx = 1; else bx = 1; }        // forward: x1 / back: x0
+    else if (d[0] === 1) { if (d[1] > 0) fy = 1; else by = 1; }   // down: y1 / up: y0
+    else { fx = 1; bx = 1; }                                       // neutral air: both x edges
+    /* The growth is one-dimensional on purpose.  The cross-axis band is authored
+       and stays authored, because the ink that disagrees with it is almost never a
+       limb: Valor's side smash paints its crescent up over his head, and letting
+       that vote made a 60px-tall box 138px tall — a forward smash that suddenly
+       reverses anyone standing above you.  Same story for a vertical move's
+       sideways spread.  A box may reach where the blow goes, nowhere else. */
+    const sil = art.silhouette;
+    /* And only within a budget.  The ink of a swing is a brushstroke: a sparkle
+       that trails two body-heights below a down-air is not two body-heights of
+       hitbox, while a raised axe that clears the head by one is.  One drawn body
+       (the atlas' reference height) is what a move is allowed to gain, so the art
+       can line the box up with the limb but cannot inflate a 40px spike into a
+       ground-clearing beam. */
+    const at = A[key];
+    const cap = 0.85 * at.unit * at.scale;
+    return {
+      x0: (bx && art.x0 < sil[0]) ? Math.max(base.x0 - cap, Math.min(base.x0, art.x0)) : base.x0,
+      x1: (fx && art.x1 > sil[2]) ? Math.min(base.x1 + cap, Math.max(base.x1, art.x1)) : base.x1,
+      y0: (by && art.y0 < sil[1]) ? Math.max(base.y0 - cap, Math.min(base.y0, art.y0)) : base.y0,
+      y1: (fy && art.y1 > sil[3]) ? Math.min(base.y1 + cap, Math.max(base.y1, art.y1)) : base.y1,
+      art, cap,
+    };
+  }
+
+  function strikeIndex(key, anim) {
+    const at = A[key];
+    const g = at && at.strike[anim];
+    return g ? g.k : -1;
+  }
   function ready(key) { return !!A[key]; }
+  function height(key) { return TARGET_H[key] || 108; }
 
   /* Tinted copy of a whole atlas per palette, built once per palette used. */
   function tinted(at, vi) {
@@ -124,27 +541,29 @@ const Sprites = (() => {
     return at.tint[vi];
   }
 
-  /* Which animation + frame a fighter should show right now. */
+  /* Which animation + frame a fighter should show right now.  `time` is kept in
+     the signature for the callers that have it, but nothing reads it: the clock is
+     f.animT. */
   function pickAnim(f, time) {
     const at = atlas(f.key);
     if (!at) return null;
     let name = null, spec = null;
     const act = f.action;
+    const phase = (f.state === 'attack' && act && act.key) || f.state === 'special';
     if (f.state === 'attack' && act && act.key) {
       name = MOVE_ANIM[act.key] || 'jab';
-      spec = { phase: true };
     } else if (f.state === 'special' && act) {
       name = SPECIAL_ANIM[act.specialKey || act.specialDir || 'n'] || 'nspecial';
-      spec = { phase: true };
     } else if (f.state === 'grab') {
-      name = 'grab';
+      name = 'grab'; spec = STATE_ANIM.grab;
     } else if (f.state === 'grabbed') {
-      name = 'grabbed';
+      name = 'grabbed'; spec = STATE_ANIM.grabbed;
     } else {
       const cfg = STATE_ANIM[f.state];
       if (cfg) { name = cfg.anim; spec = cfg; }
     }
     if (f.state === 'taunt') { name = 'taunt' + (1 + ((f.tauntIdx | 0) % 3)); spec = STATE_ANIM.taunt; }
+    if (f.state === 'run' && (f.dashT | 0) > 0) { name = 'dash'; spec = STATE_ANIM.dash; }
     if (f.state === 'roll') {
       // roll backwards when rolling against your facing, forwards otherwise
       const back = (f.rollDir || 0) !== 0 && (f.rollDir || 0) !== f.facing;
@@ -156,34 +575,28 @@ const Sprites = (() => {
     if (f.stunT > 120 && f.shieldHP <= 0) { name = 'shieldbreak'; spec = STATE_ANIM.shieldbreak; }
     if (f.state === 'stun') { name = 'hurt'; spec = STATE_ANIM.stun; }
     let frames = at.anims[name];
-    if (!frames || !frames.length) { frames = at.anims.idle; spec = STATE_ANIM.idle; name = 'idle'; }
-    const n = frames.length;
-    let i;
-    const from = (spec && spec.from) || 0, to = (spec && spec.to) || 1;
-    if (spec && spec.phase) {
-      // windup -> strike -> settle, mapped onto the move's real frames
-      const startup = Math.max(1, (act && act.startup) || 4);
-      const active = Math.max(1, (act && act.active) || 3);
-      const dur = Math.max(startup + active + 2, (act && act.dur) || (startup + active + 8));
-      const t = Math.max(0, f.actionT || 0);
-      let frac;
-      if (f.charging) {
-        // charged smash holds its windup with a small pulse
-        frac = 0.12 + 0.08 * (1 - Math.cos(((f.chargeT || 0) * 0.09) % (Math.PI * 2)));
-      } else if (t < startup) frac = 0.30 * (t / startup);
-      else if (t < startup + active) frac = 0.32 + 0.30 * ((t - startup) / active);
-      else frac = 0.64 + 0.36 * Math.min(1, (t - startup - active) / Math.max(1, dur - startup - active));
-      i = Math.round(frac * (n - 1));
-    } else {
-      const fps = (spec && spec.fps) || 8;
-      const span = Math.max(1, Math.round((to - from) * n));
-      const base = Math.round(from * (n - 1));
-      i = base + (Math.floor(time * fps / 1000) % span);
-      if (i >= n) i = n - 1;
+    if ((!frames || !frames.length) && spec && spec.fallback) {
+      const alt = at.anims[spec.fallback];
+      if (alt && alt.length) frames = alt;
     }
-    if (i < 0) i = 0;
-    if (i > n - 1) i = n - 1;
-    return { at, name, frames, i };
+    if (!frames || !frames.length) { frames = at.anims.idle; spec = STATE_ANIM.idle; name = 'idle'; }
+    spec = spec || { anim: name };
+    const n = frames.length;
+    let i, wob = 0;
+    const c = clockFor(f, name, spec);
+    let swing = null;
+    if (phase) {
+      i = attackIndex(f, frames, at.strike[name]);
+      if (f.charging) wob = Math.sin((f.chargeT | 0) * 0.42);       // the windup shakes
+      swing = attackSwing(f, frames.length >= 3 ? 0.34 : frames.length === 2 ? 0.72 : 1);
+    } else {
+      i = rowIndex(c, spec, frames, f.actionT | 0, (act && act.dur) || 1);
+      if (spec.pulse) wob = Math.sin(c.t * 0.085) * spec.pulse;
+    }
+    const prog = spec.stride ? c.p : c.t / Math.max(1, spec.step || DEFAULT_STEP);
+    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, swing,
+      vfx: phase ? vfxGate(f) : 1,
+      phase: phase || undefined };
   }
 
   /* Legacy-compatible alias (used by the HUD portraits/tests). */
@@ -335,16 +748,17 @@ const Sprites = (() => {
   /* attack pose interpolation */
   function attackPose(f) {
     const a = f.action; if (!a) return null;
-    const prog = clamp(f.actionT / a.dur, 0, 1);
-    const startupP = a.startup / a.dur, activeP = (a.startup + a.active) / a.dur;
-    let phase = 0; // 0 windup, 1 extended, 2 recover
-    if (prog < startupP) phase = 0; else if (prog < activeP) phase = 1; else phase = 2;
-    const easeOut = x => 1 - Math.pow(1 - x, 3);
     const p = getPose(f);
     const type = a.poseType || 'swing';
     const dir = a.dir || 'f';
-    const wind = phase === 0 ? eased(prog / Math.max(startupP, 0.01)) : phase === 1 ? 1 : 1 - eased((prog - activeP) / Math.max(1 - activeP, 0.01));
-    const swing = phase === 0 ? -1 * wind : phase === 1 ? 1 : 1 - wind * 0.7;
+    /* attackPhase() is the same window map pickAnim uses, so the drawn limb is
+       fully extended on exactly the ticks the hitbox is live: the vector fallback
+       and the sprite can never disagree about when the blow lands.  Recovery used
+       to ease the limb *back out* to full extension at the end of the move, which
+       is what made attacks read as if they ended late. */
+    const ph = attackPhase(f);
+    const wind = ph.phase === 0 ? eased(ph.p) : ph.phase === 1 ? 1 : 1 - eased(ph.p);
+    const swing = ph.phase === 0 ? -wind : ph.phase === 1 ? 1 : wind;
     switch (type) {
       case 'jab': {
         p.armF = [-6 + swing * 8, -88 - swing * 6, 0.55 + 0.25 * Math.max(0, swing), 0.3];
@@ -557,7 +971,7 @@ const Sprites = (() => {
     ctx.fillStyle = acc; ctx.fillRect(hipX - 3 * s, hipY - 3.4 * s, 6 * s, 6.8 * s);
 
     // ---- cape / coat / scarf
-    const capeSway = f.vx * 1.6 + Math.sin(time * 0.05) * 3;
+    const capeSway = f.vx * 1.6 + Math.sin((f.animT | 0) * 0.045) * 3;
     if (def.locomotion === 'humanoid' || def.locomotion === 'mage') {
       ctx.beginPath();
       ctx.moveTo(hipX - 10 * s + lean * 10 * s, shoulderY + 2 * s);
@@ -664,14 +1078,7 @@ const Sprites = (() => {
     circle(ctx, haF[0], haF[1], 4.6 * s, skin);
 
     // weapon at hand
-    let wang = pose.weaponA;
-    if (f.state === 'attack' && f.action) {
-      const prog = clamp(f.actionT / f.action.dur, 0, 1);
-      const sp = f.action.startup / f.action.dur;
-      const ap = (f.action.startup + f.action.active) / f.action.dur;
-      let w2 = prog < sp ? -1 : prog < ap ? 1 : 0.35;
-      wang = pose.weaponA !== undefined ? pose.weaponA : wang;
-    }
+    let wang = pose.weaponA;      // already phase-mapped by attackPose()
     drawWeapon(ctx, f, haF[0], haF[1], wang, { primary: prim, secondary: sec, accent: acc });
 
     // ---- hit flash overlay
@@ -731,13 +1138,38 @@ const Sprites = (() => {
     const body = at.tiles[ent[0]];
     const w = body.w * s, h = body.h * s;
 
-    const moving = (f.state === 'walk' || f.state === 'run');
-    const bob = f.state === 'idle' ? Math.sin(time * 0.005 + f.id) * 0.7
-      : moving ? Math.abs(Math.sin(time * (f.state === 'run' ? 0.019 : 0.012))) * -1.1 : 0;
-    const lean = f.state === 'run' ? 0.05 : 0;
-    let squash = f.state === 'land' ? 1.03 : 1;
-    if (f.hitlag > 0) squash *= 0.98;              // impact reaction, no flicker
-    if (f.state === 'roll') squash *= 1.0;
+    /* The body drops at footfall (an integer tile) and rises mid-step, driven by
+       the same stride progress the tiles use — so the bob speeds up and slows down
+       with the fighter instead of drifting out of sync with it. */
+    const moving = (f.state === 'walk' || f.state === 'run' || f.state === 'turn');
+    const tk = f.animT | 0;                       // game ticks, never wall clock
+    const step = (sel.prog || 0) % 1;
+    const bob = f.state === 'idle' ? Math.sin(tk * 0.052 + f.id) * 0.7
+      : f.state === 'turn' ? -0.7
+      : moving ? (0.5 - Math.abs(step - 0.5)) * -2.8 : 0;
+    const dashing = (f.dashT | 0) > 0;
+    let lean = f.state === 'run' ? (dashing ? 0.14 : 0.05) : 0;
+    if (f.state === 'turn') lean = -0.07;                     // leaning on the brakes
+    let squash = 1;
+    if (f.state === 'land') squash = 1 + 0.11 * (1 - Math.min(1, (f.actionT | 0) / 7));
+    if (f.state === 'jump' && (f.stateT | 0) < 6) squash *= 1.06;   // take-off stretch
+    if (f.state === 'fastfall') squash *= 0.93;                    // vertical smear
+    else if (f.state === 'fall' && f.vy > 6) squash *= 0.97;
+    if (f.hitlag > 0) squash *= 0.985;                             // impact reaction
+    if (sel.wob) {
+      squash *= 1 + sel.wob * 0.012;                    // charge pulse / shield breath
+      lean += sel.wob * 0.022;
+    }
+    /* The synthesised swing rides on top of the tile (see attackSwing): the drawn
+       frame leans back through startup, is thrown forward for the whole hit
+       window, and eases out during recovery — the lean is what makes a smash with
+       only one frame of art still read as a wind-up rather than a teleport.  Most
+       attack rows on these sheets are 1–2 tiles with the effect painted into the
+       tile, so this transform is the whole difference between anticipation and
+       impact: without it, the finished crescent is on screen from tick 0. */
+    const sw = sel.swing;
+    const fs = (f.scale || 1);
+    if (sw) { lean += sw.lean; squash *= sw.sq; }
 
     // ground shadow
     if (f.groundDist >= 0 && f.groundDist < 240) {
@@ -754,10 +1186,11 @@ const Sprites = (() => {
 
     ctx.save();
     const inv = f.invincT > 0 || f.respawnT > 0 || f.buffs.star > 0 || f.spawnProtect > 0;
-    if (inv && Math.floor(time / 4) % 2 === 0) ctx.globalAlpha = 0.45;
+    if (inv && Math.floor(tk / 4) % 2 === 0) ctx.globalAlpha = 0.45;
     if (f.buffs.metal > 0) ctx.filter = 'grayscale(0.6) brightness(1.15)';
 
     ctx.translate(f.x + (f.shakeX || 0), f.y + bob + (f.shakeY || 0));
+    if (sw) ctx.translate(sw.dx * fs * dir, sw.dy * fs);   // thrown along the facing
 
     // roll spin (the sliced roll rows are a 2-frame tumble; finish the arc)
     if (f.state === 'roll') {
@@ -768,9 +1201,10 @@ const Sprites = (() => {
     }
     if (f.state === 'ledge') { ctx.translate(0, 5); ctx.rotate(0.05); }
 
-    ctx.scale(dir * squash * s, (2 - squash) * s);
+    const stx = sw && sw.sx ? sw.sx : 1;
+    ctx.scale(dir * squash * stx * s, (2 - squash) / stx * s);
     if (lean) ctx.rotate(lean * dir);
-    blit(ctx, at, src, ent, false);
+    blit(ctx, at, src, ent, false, sel.vfx);
     ctx.restore();                    // also drops the metal filter
 
     // ---- shield bubble: a readable dome, not a sprite-wide glow (a big
@@ -806,7 +1240,7 @@ const Sprites = (() => {
   }
 
   /* Body tile first, then any baked VFX additively so crescents glow. */
-  function blit(ctx, at, src, ent, flashPass) {
+  function blit(ctx, at, src, ent, flashPass, vfx) {
     const draw = (part) => {
       const t = at.tiles[part[0]];
       if (!t) return;
@@ -815,13 +1249,19 @@ const Sprites = (() => {
     draw(ent);
     const fx = ent[3] || [];
     if (!fx.length) return;
-    const prev = ctx.globalCompositeOperation;
+    const k = vfx === undefined ? 1 : clamp(vfx, 0, 1);
+    if (k <= 0.02) return;                  // not yet: the body alone is the pose
+    const prev = ctx.globalCompositeOperation, pa = ctx.globalAlpha;
     if (!flashPass) ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = pa * k;               // the wind-up glow builds, it does not sit
     for (const p of fx) draw(p);
+    ctx.globalAlpha = pa;
     ctx.globalCompositeOperation = prev;
   }
 
-  return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim, atlas, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
+  return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
+    atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
+    STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 
 /* ============================================================

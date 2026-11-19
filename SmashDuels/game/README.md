@@ -39,6 +39,33 @@ lines up with the hitbox instead of a fixed frame counter. Palettes are a per-va
 of the whole atlas (6 variants: default, blue, green, magenta, gold, shadow). If a sheet is
 missing, `drawFighter` falls back to the procedural vector fighter.
 
+Two rules keep the picture and the collision honest, because the sheets do not always
+draw a whole swing: **an attack's phases drive both** (`vfxGate` fades a baked crescent
+in across the wind-up and holds it at full strength exactly while the hitbox is live;
+`attackSwing` adds a coil → throw lean/squash so a 1-tile row still reads as anticipation
+then impact), and **the art gets a vote on the hitbox but only along the axis the blow
+travels** — a drawn limb may extend a box up to ~0.85 of a body-height, never sideways
+for a horizontal swing, and the *hurt* box measures the figure alone, not its effects.
+Rows the slicer could not split are re-cut by `tools/atlas_desmerge.py` from the shipped
+atlas PNG (no re-slicing), which is what turned the last merged filmstrips into animation.
+
+### Watching an animation without a browser
+
+`tools/film.js` drives the engine at a fixed tick and writes down every `drawImage` the
+renderer asked for — plus the live hitbox and hurtbox of that same tick — and
+`tools/film_render.py` pastes the real atlas tiles through those transforms into a contact
+sheet and an animated GIF per fighter (needs Pillow; nothing else):
+
+```bash
+node tools/film.js valor                     # record one fighter's rows
+python3 tools/film_render.py valor            # → anim-films/valor.film.png / .gif
+python3 tools/film_render.py --rows fsmash,walk,dash   # just those rows
+```
+
+It is the shipped `Sprites.drawSpriteFighter`, so what the film shows is what the game
+paints; it is not a browser, so treat it as ground truth for timing, anchors, stride sync
+and box-vs-art, not for shader-level fidelity.
+
 ## Controls
 
 **Player 1** — `A`/`D` move · `W` or `Space` jump · `S` crouch / fast-fall / drop through ·
@@ -116,12 +143,13 @@ python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
 The engine runs headless in node — no browser, no canvas (also from the project root):
 
 ```bash
-node tools/simtest.js       # physics, stage collision, facing, state machine
-node tools/atlascheck.js    # atlases + the sprite renderer
-node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline
+node tools/animtest.js      # animation states, frame data, hitbox geometry  (22)
+node tools/simtest.js       # physics, stage collision, facing, state machine (16)
+node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
+node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
 ```
 
-All three boot the shipped files (`js/core.js … js/match.js`, plus `js/render.js` for the atlas
+All four boot the shipped files (`js/core.js … js/match.js`, plus `js/render.js` for the atlas
 suite and `js/cloud.js` for the sync suite) inside a stubbed DOM, so the code under test is the
 code that runs in the browser. `cloudtest.js` also stubs `fetch` with a server that speaks the
 same protocol as the Postgres function in `supabase/migrations/`, so both sides of the wire are
@@ -156,11 +184,15 @@ game/
   assets/atlas/     {key}.png + {key}.json — packed animation atlases (generated)
 
 tools/
-  slice_roster.py   roster sheets → atlas + animation meta
-  harness.js        headless boot (stub DOM/canvas/audio) shared by the suites
-  simtest.js        simulation tests        · node tools/simtest.js
-  atlascheck.js     atlas + renderer tests  · node tools/atlascheck.js
-  cloudtest.js      save-sync tests         · node tools/cloudtest.js
+  slice_roster.py       roster sheets → atlas + animation meta
+  atlas_desmerge.py     re-cut the merged attack rows the slicer could not split
+  harness.js            headless boot (stub DOM/canvas/audio) shared by the suites
+  animtest.js           animation + hitbox tests  · node tools/animtest.js
+  film.js               record what the renderer draws, tick by tick
+  film_render.py        …and turn it into a contact sheet + GIF
+  simtest.js            simulation tests        · node tools/simtest.js
+  atlascheck.js         atlas + renderer tests  · node tools/atlascheck.js
+  cloudtest.js          save-sync tests         · node tools/cloudtest.js
 
 supabase/
   README.md         project setup, what is stored, the sync contract

@@ -5,6 +5,16 @@
 
 const FRAME = 1; // logic frame unit
 
+/* Grounded locomotion, in ticks.  A skid has to be long enough to read as weight
+   and short enough that a pivot is still a tool: 11 ticks is ~2 frames of
+   padding at 60 Hz, so a wavedash-length input still comes out of it. */
+const SKID_FRAMES = 11;
+const DASH_KICK = 0.28;               // fraction of run speed added on a fresh tap
+const GROUNDED_ACT = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'land',
+  'shield', 'fall', 'doublejump', 'helpless', 'taunt'];
+const MOVABLE = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'shield',
+  'fall', 'doublejump', 'helpless', 'land'];
+
 class Fighter {
   constructor(opts) {
     const def = FIGHTERS[opts.key];
@@ -41,11 +51,11 @@ class Fighter {
     this.jumpsLeft = this.def.stats.jumps;
     this.airJumpsLeft = this.def.stats.airJumps;
     this.fastfalled = false; this.usedUpB = false; this.usedAirDodge = false;
-    this.dashT = 0; this.shieldDodging = false;
+    this.dashT = 0; this.turnT = 0; this.runArmed = false; this.shieldDodging = false;
     this.hitstun = 0; this.hitlag = 0; this.shakeX = 0; this.shakeY = 0;
     this.invincT = 0; this.respawnT = 0; this.respawnDropT = 0; this.flashT = 0; this.hitT = 0;
     this.shieldHP = 0; this.shieldStun = 0; this.shieldT = 0;
-    this.action = null; this.actionT = 0; this.hitIds = new Set();
+    this.action = null; this.actionT = 0; this.hitIds = new Map();
     this.ledge = null; this.ledgeCD = 0; this.ledgeInvuln = 0;
     this.grabbing = null; this.grabbedBy = null; this.grabT = 0;
     this.groundDist = 0; this.onGround = false;
@@ -97,9 +107,58 @@ class Fighter {
     if (this.buffs.metal > 0) s *= 1.06;
     return s;
   }
+  /* The hurtbox follows the pose.  A constant slab is why "I clearly hit their
+     head and nothing happened" and "that sweep connected from a metre away" both
+     happen: it was the same box while crouching, rolling and mid-lunge.
+     Body size now comes from each fighter's `body` (sized to the drawn sprite —
+     see the hurtbox test in tools/animtest.js) and is reshaped per state:
+       crouch / a low move squashes it, rolls shrink it, lying down is short and
+       wide, a held shield reaches out to where the bubble is actually drawn, and
+       attacking pushes it forward by whatever the art sticks out past the
+       silhouette — the same measurement the hitbox uses, so a big swing really
+       does leave your own body open. That last one is the trade a whiff punish is
+       made of; it is deliberately the only extension, never a shrink. */
   get hurtbox() {
+    const b = this.def.body || { w: 44, h: 104 };
     const s = this.scale;
-    return { x: this.x - 22 * s, y: this.y - 104 * s, w: 44 * s, h: 104 * s };
+    let w = b.w * s, h = b.h * s;
+    const st = this.state;
+    if (st === 'crouch') { h *= 0.66; }
+    else if (st === 'roll' || st === 'spotdodge' || st === 'airdodge') { h *= 0.76; w *= 1.1; }
+    else if (st === 'down' || st === 'getup') { h *= 0.36; w *= 1.45; }
+    else if (st === 'ledge') { h *= 0.5; w *= 0.9; }
+    else if (st === 'attack' || st === 'special') {
+      const ext = this.attackExtent();
+      w = Math.max(w, w + ext.back + ext.fwd);
+      h = Math.max(h, h + ext.up);
+      this._hurtShift = ext.fwd - ext.back;         // pushed out along the facing
+    }
+    if (st !== 'attack' && st !== 'special') this._hurtShift = 0;
+    if (st === 'shield' || this.shieldHP > 0) w *= 1.1;
+    return { x: this.x - w / 2 + (this._hurtShift || 0) / 2, y: this.y - h, w, h };
+  }
+
+  /* How far the current swing's *body* reaches past the resting body, in world px
+     on each side — so lunging into a smash makes you hittable out where the arm
+     actually is, instead of leaving the hurtbox on the spot you started from.
+
+     Deliberately measured against `bodyBox`, the tiles without their baked VFX:
+     a drawn crescent is part of what a swing hits with, but it is not a limb, and
+     scoring it here is what turned a forward smash into a 220px-wide vulnerable
+     slab you could trade through.  Zero without an atlas, so a fighter with no
+     sheet art just keeps its plain box. */
+  attackExtent() {
+    const zero = { fwd: 0, back: 0, up: 0, down: 0 };
+    const a = this.action;
+    if (!a || !Number.isFinite(this.x) || typeof Sprites === 'undefined') return zero;
+    const anim = Sprites.MOVE_ANIM[a.key] || Sprites.SPECIAL_ANIM[a.specialKey || a.specialDir];
+    if (!anim) return zero;
+    const sel = Sprites.pickAnim(this, 0);
+    if (!sel) return zero;
+    const art = Sprites.artReach(this.key, anim, sel.i, 'body');
+    if (!art) return zero;
+    const s = this.scale;
+    return { fwd: art.over[2] * s, back: art.over[0] * s, up: art.over[1] * s, down: art.over[3] * s };
   }
   get center() { return { x: this.x, y: this.y - 52 * this.scale }; }
   get invincible() { return this.invincT > 0 || this.respawnT > 0 || this.ledgeInvuln > 0 || this.buffs.star > 0 || this.spawnProtect > 0; }
@@ -208,6 +267,7 @@ class Fighter {
         this.vy = Math.sin(newAng) * sp;
       }
       this.state = this.onGround ? 'hitstun' : 'launch';
+      this.turnT = 0; this.endDash();
       this.applyPhysics(match);
       if (this.checkBlast(match)) return;
       // tech window
@@ -255,16 +315,33 @@ class Fighter {
 
   canAct() {
     return !this.grabbedBy && this.state !== 'grabbed' && this.ledge !== 'hang' &&
-      ['idle', 'walk', 'run', 'crouch', 'air', 'jump', 'land', 'shield', 'fall', 'doublejump', 'helpless', 'taunt'].includes(this.state) &&
+      GROUNDED_ACT.includes(this.state) &&
       this.shieldStun <= 0 && this.stunT <= 0;
   }
-  canMove() {
-    return ['idle', 'walk', 'run', 'crouch', 'air', 'jump', 'shield', 'fall', 'doublejump', 'helpless', 'land'].includes(this.state);
-  }
+  canMove() { return MOVABLE.includes(this.state); }
   onGroundish() { return this.onGround; }
   airborne() { return !this.onGround && this.state !== 'ledge'; }
 
-  /* ---------------- movement ---------------- */
+  /* ---------------- movement ----------------
+     Reworked around three things the old version did to the feel:
+
+     1. Reversing snapped `facing` and kept the stride playing while momentum
+        carried the fighter the other way — the moonwalk, and the reason movement
+        read as "scuffed".  A reversal while moving faster than a walk now enters
+        a `turn` state: facing flips at once (so attacks aim right), the walk
+        cycle stops, and traction plus a reverse push scrubs the speed over
+        SKID_FRAMES.
+     2. `state` was decided from |vx| > walk * 1.12, so the last few pixels of a
+        slide to a stop still played a walk cycle.  Movement state now comes from
+        the input; the renderer advances the cycle by distance travelled, which
+        is what makes the deceleration read as weight instead of a glitch.
+     3. A fresh tap set `dashT` but only ever used it as a speed tier, so the
+        dash art never played and there was no burst.  Tapping now kicks the
+        velocity, plays the dash row, and ARMS the run: holding a direction keeps
+        the run speed, releasing or skidding disarms it and you walk.  (The old
+        `state === 'run'` check pinned you to run speed through a reversal, which
+        is how Grim sprinted backwards out of a pivot.)
+     ============================================================ */
   handleMovement(match) {
     const st = this.def.stats;
     const inp = this.input;
@@ -272,35 +349,56 @@ class Fighter {
     const spd = this.speedMul();
 
     if (this.onGround) {
+      if (this.turnT > 0) this.turnT--;
+      if (this.dashT > 0) this.dashT--;
+
       // crouch
       if (inp.down && this.state !== 'land' && !this.held) {
-        this.state = 'crouch'; this.vx = approach(this.vx, 0, st.traction * 2);
+        this.state = 'crouch';
+        this.vx = approach(this.vx, 0, st.traction * 2.6);
+        this.turnT = 0; this.endDash();
         // drop through platform
         if (inp.downP && this.onPlatform) { this.dropThroughT = 12; this.y += 6; this.onGround = false; this.onPlatform = null; }
         return;
       }
-      if (h !== 0) {
-        const prevFacing = this.facing;
-        this.facing = h;
-        // a fresh tap in a direction (or a reversal) starts a dash
-        const tapped = h > 0 ? this.dirIsTap('right') : this.dirIsTap('left');
-        const reversing = prevFacing !== h;
-        if (tapped || reversing || this.dashT > 0) {
-          if (this.dashT === undefined || this.dashT <= 0) this.dashT = st.dashFrames;
-          this.dashT--;
-        } else if (this.dashT > 0) this.dashT--;
 
-        // speed tiers: tap = dash burst, holding keeps the run, releasing drops to walk
-        const dashing = this.dashT > 0;
-        const wasRunning = this.state === 'run';
-        const target = h * ((dashing || wasRunning) ? st.run : st.walk) * spd;
-        const accel = st.traction * ((dashing || wasRunning) ? 1.5 : 1.6);
-        this.vx = approach(this.vx, target, accel);
-        this.state = Math.abs(this.vx) > st.walk * 1.12 ? 'run' : 'walk';
+      if (h !== 0) {
+        const speed = Math.abs(this.vx);
+        if (h !== this.facing) {
+          // turn-around: face it immediately, then scrub if we were moving
+          this.facing = h;
+          if (speed > st.walk * 1.15) {
+            this.turnT = SKID_FRAMES;
+            this.endDash();
+            match.fx.dust(this.x - h * 8 * this.scale, this.y, 6, this.pal.accent);
+            AUDIO.sfx('land', { power: 0.18 });
+          }
+        } else if ((h > 0 ? this.dirIsTap('right') : this.dirIsTap('left')) && this.turnT <= 0 && this.dashT <= 0) {
+          // a fresh tap: short burst off the mark, and the run is armed
+          this.dashT = st.dashFrames;
+          this.runArmed = true;
+          this.vx += h * st.run * DASH_KICK;
+        }
+
+        if (this.turnT > 0 && this.vx * this.facing < -0.2) {
+          // still sliding: drag, then a gentle nudge into the new direction
+          const early = this.turnT < 4 && speed < st.walk * 1.4;   // tap the other way to cut it short
+          this.vx = approach(this.vx, early ? h * st.walk * spd : 0, st.traction * (early ? 2.0 : 3.1));
+          this.state = 'turn';
+          if (early) this.turnT = 0;
+        } else {
+          this.turnT = 0;
+          const running = this.runArmed && (this.dashT > 0 || speed > st.walk * 1.05);
+          const target = h * (running ? st.run : st.walk) * spd;
+          this.vx = approach(this.vx, target, st.traction * (running ? 1.9 : 1.7));
+          this.state = speed < 0.25 ? (this.shieldHP > 0 ? 'shield' : 'idle')
+            : running ? 'run' : (Math.abs(this.vx) > st.walk * 0.7 ? (running ? 'run' : 'walk') : 'walk');
+        }
       } else {
-        this.dashT = 0;
+        this.turnT = 0;
+        if (this.dashT <= 0) this.runArmed = false;
         this.vx = approach(this.vx, 0, st.traction * 2.2);
-        if (Math.abs(this.vx) < 0.25 && this.state !== 'land') this.state = this.shieldHP > 0 ? 'shield' : 'idle';
+        if (this.state !== 'land') this.state = Math.abs(this.vx) < 0.25 ? (this.shieldHP > 0 ? 'shield' : 'idle') : 'walk';
       }
       // jumps (jump button only — up-tap jump removed so up+attack can be utilts)
       if (this.buf('jump')) { this.tryJump(match); return; }
@@ -319,6 +417,9 @@ class Fighter {
     }
   }
 
+  /* Releasing the stick, a skid, a jump or a landing all drop you out of the run. */
+  endDash() { this.runArmed = false; }
+
   tryJump(match) {
     const st = this.def.stats;
     if (this.onGround) {
@@ -328,6 +429,7 @@ class Fighter {
       this.fastfalled = false; this.usedAirDodge = false;
       this.jumpsLeft = st.jumps; this.airJumpsLeft = st.airJumps;
       this.state = 'jump';
+      this.endDash(); this.turnT = 0;
       this.jumpHoldT = 8; this.jumpCut = true;
       AUDIO.sfx('jump');
       match.fx.ring(this.x, this.y, this.pal.accent, 18);
@@ -461,6 +563,7 @@ class Fighter {
     }
     if (this.hitstun <= 0 && this.state !== 'attack' && this.state !== 'shield' && this.state !== 'special' && this.state !== 'land') {
       this.state = 'land'; this.stateT = 0;
+      this.turnT = 0; this.endDash();
       this.landLag = impact > 14 ? 9 : 4;
       this.action = { type: 'landing', dur: this.landLag };
       this.actionT = 0;
@@ -533,6 +636,7 @@ class Fighter {
     if (dir === 0) dir = this.facing;
     this.shieldDodging = true; this.shieldHP = 0;
     this.state = 'roll'; this.action = { type: 'roll', dur: 26 }; this.actionT = 0;
+    this.animT = 0; this.turnT = 0; this.endDash();
     this.rollDir = dir; this.invincT = 16;
     // facing is NOT snapped to the roll direction: a back-roll should still
     // leave you looking at the opponent, and the old snap left every roll
@@ -542,12 +646,14 @@ class Fighter {
   startSpotDodge(match) {
     this.shieldDodging = true; this.shieldHP = 0;
     this.state = 'spotdodge'; this.action = { type: 'spotdodge', dur: 22 }; this.actionT = 0;
+    this.animT = 0; this.turnT = 0; this.endDash();
     this.invincT = 14;
     AUDIO.sfx('dodge');
   }
   startAirDodge(match) {
     this.usedAirDodge = true;
     this.state = 'airdodge'; this.action = { type: 'airdodge', dur: 26 }; this.actionT = 0;
+    this.animT = 0;
     this.invincT = 18;
     const h = this.horiz(), v = this.vert();
     if (h || v) { this.vx = h * 5.4; this.vy = v * 5.4 * 0.8; }
@@ -569,7 +675,11 @@ class Fighter {
     const h = this.horiz(), v = this.vert();
     const smash = this.smashInput();
     if (this.onGround) {
-      if (Math.abs(this.vx) > this.def.stats.walk * 1.12 || this.state === 'run') return 'dashattack';
+      /* A skid is not a dash: pivoting should give you a tilt or a smash, never
+         the run attack.  The dash burst itself (dashT) does count, which is the
+         frame window people actually press in. */
+      if (this.state !== 'turn' && (this.dashT > 0 || this.state === 'run' ||
+          Math.abs(this.vx) > this.def.stats.walk * 1.12)) return 'dashattack';
       if (v < 0 || (this.dirIsTap('up') && this.input.up)) return smash ? 'usmash' : 'utilt';
       if (v > 0 || (this.dirIsTap('down') && this.input.down)) return smash ? 'dsmash' : 'dtilt';
       if (h !== 0) return smash ? 'fsmash' : 'ftilt';
@@ -593,13 +703,19 @@ class Fighter {
       aerialDir: kind === 'nair' ? 'n' : kind === 'fair' ? 'f' : kind === 'bair' ? 'b' : kind === 'uair' ? 'u' : 'd',
       charge: !!m.charge, dirFacing: this.facing,
     });
-    this.actionT = 0; this.hitIds = new Set();
+    this.actionT = 0; this.hitIds = new Map();
     this.charging = false; this.chargeT = 0; this.forceRelease = false;
+    // restart the animation clock with the action: the strike tile has to land on
+    // the startup frame, so a mid-slide actionT would otherwise start it late
+    this.animT = 0; this.turnT = 0; this.endDash();
+    // per-box windows: a box with no explicit t0/t1 spans the whole active window
+    this.action.hitboxes = (m.hitboxes || []).map((b) => Object.assign({}, b));
     if (!this.onGround) this.vy = Math.min(this.vy, 0) * 0.4; // slight float
     AUDIO.sfx('swing');
     match.fx.swoosh(this, m.reach || 40);
     // small forward lunge for ground attacks
     if (this.onGround && (kind === 'ftilt' || kind === 'fsmash')) this.vx += this.facing * (kind === 'fsmash' ? 1.6 : 1.0);
+    if (this.onGround && kind === 'dashattack') { this.vx += this.facing * 2.6; this.dashT = 0; }
   }
 
   startGrab(match) {
@@ -631,7 +747,7 @@ class Fighter {
     // keep the move's own kind (projectile / dash / recover / counter / mine …)
     // — overwriting `type` with 'special' made every special-type branch dead
     this.action = Object.assign({}, sp, { dur: sp.frames, kind: 'special', specialType: sp.type, type: 'special', specialKey: dir, poseType: 'special', specialDir: dir });
-    this.actionT = 0; this.hitIds = new Set(); this.specPhase = 'startup';
+    this.actionT = 0; this.hitIds = new Map(); this.specPhase = 'startup';
     if (sp.cooldown) this.cooldowns[dir] = sp.cooldown;
     this.specialData = { fired: 0, timer: 0, projFired: false, orbFired: false, dashFired: false, tpFired: false, lassoFired: false, riseHit: false, mineFired: false };
     if (dir === 'u') { this.usedUpB = true; }
@@ -706,14 +822,18 @@ class Fighter {
 
     const dur = a.dur || 30;
     const ended = t >= dur;
-    // a new active window must be able to hit the same target again
-    if (a.type === 'move' && t === a.startup + (a.active || 0) + 1) this.hitIds.clear();
-
     // resolve hitboxes
     if (a.type === 'move') {
-      const activeStart = a.startup, activeEnd = a.startup + a.active;
-      if (t >= activeStart && t <= activeEnd) this.checkHit(match, this.smashMultiplier());
-      else if (a.multi && t > activeEnd) { /* multi hit later frames */ }
+      /* `t >= startup && t < startup + active` — `active` is the number of live
+         frames, and the old `<= startup + active` made every move in the roster
+         hit for one frame too long, with the extra tick landing after the
+         animation had already left its strike pose. */
+      const n = a.active || 1;
+      if (t >= a.startup && t < a.startup + n) this.checkHit(match, this.smashMultiplier());
+      /* Re-arming a target is the resolver's job now (`rehitBlocked` compares the
+         tick of the last hit against the move's re-hit spacing), so nothing clears
+         this mid-move — the old blanket clear fired on a fixed tick and turned a
+         2-hit flurry into a 3-hit one. */
     }
     if (a.type === 'special') this.updateSpecial(match, a, t);
     if (a.type === 'item') {
@@ -866,34 +986,69 @@ class Fighter {
     }
   }
 
+  /* The rectangles that are live on THIS tick, in world space, already mirrored by
+     facing and scaled by the fighter's size.  Empty unless the active window is
+     open right now.
+
+     Kept as its own method so the film tool (tools/film.js) and any future debug
+     overlay read the same boxes the engine resolves damage against, instead of
+     reimplementing the maths and drifting.  Box windows are absolute actionT
+     ticks (`b.t0`/`b.t1` are offsets into the active window), and `Sprites.attackBox`
+     is what lets the drawn art widen a box: the hitbox and the picture come from
+     the one measurement, so they cannot disagree. */
+  activeBoxes() {
+    const a = this.action;
+    if (!a || !a.hitboxes) return [];
+    const t = this.actionT - a.startup;
+    if (t < 0 || t >= (a.active || 1)) return [];
+    const anim = (a.type === 'move' && typeof Sprites !== 'undefined' && Sprites.atlas && Sprites.atlas(this.key))
+      ? Sprites.MOVE_ANIM[a.key] : null;
+    const sel = anim ? Sprites.pickAnim(this, 0) : null;
+    const s = this.scale;
+    const out = [];
+    for (const b of a.hitboxes) {
+      const w0 = b.t0 || 0;
+      const w1 = b.t1 === undefined ? 99 : b.t1;
+      if (t < w0 || t > w1) continue;
+      let r = { x0: b.x, x1: b.x + b.w, y0: b.y, y1: b.y + b.h, art: null };
+      /* The art may only ever EXTEND a hitbox, at the edges where the drawing
+         leaves the resting silhouette — never carve a hole in the authored one. */
+      if (sel && Sprites.attackBox) r = Object.assign(r, Sprites.attackBox(this.key, anim, sel.i, b));
+      out.push({
+        box: {
+          x: this.facing > 0 ? this.x + r.x0 * s : this.x - r.x1 * s,
+          y: this.y + r.y0 * s, w: (r.x1 - r.x0) * s, h: (r.y1 - r.y0) * s,
+        },
+        art: r.art, b,
+      });
+    }
+    return out;
+  }
+
+  /* Resolve one tick of the active window against every eligible target. */
   checkHit(match, mult = 1) {
     const a = this.action;
-    const boxes = a.hitboxes;
-    if (!boxes) return;
-    const t = this.actionT - a.startup;
-    for (const b of boxes) {
-      if (t < (b.t0 || 0) || t > (b.t1 === undefined ? 99 : b.t1)) continue;
-      const wx = this.x + (b.x + b.w / 2) * this.facing * this.scale - (b.w / 2) * this.scale;
-      const wy = this.y + b.y * this.scale;
-      const box = { x: this.facing > 0 ? this.x + b.x * this.scale : this.x - (b.x + b.w) * this.scale, y: this.y + b.y * this.scale, w: b.w * this.scale, h: b.h * this.scale };
+    const live = this.activeBoxes();
+    if (!live.length) return;
+    for (const { box } of live) {
       for (const target of match.fighters) {
         if (target === this || target.eliminated) continue;
         if (match.sameTeam(this, target)) continue;
-        if (this.hitIds.has(target.id)) continue;
+        if (this.rehitBlocked(target, a)) continue;
         if (target.invincible) continue;
         if (!aabb(box, target.hurtbox)) continue;
         // shield?
         if (target.shieldHP > 0 && !a.grab) {
-          this.hitIds.add(target.id);
+          this.hitIds.set(target.id, this.actionT);
           match.shieldHit(this, target, a.damage, box);
           continue;
         }
         if (target.counterActive) {
           target.counterHit = this; target.counterActive = false;
-          this.hitIds.add(target.id);
+          this.hitIds.set(target.id, this.actionT);
           continue;
         }
-        this.hitIds.add(target.id);
+        this.hitIds.set(target.id, this.actionT);
         const stale = this.staleMult(a.key || 'jab');
         this.pushStale(a.key || 'jab');
         match.hitFighter(this, target, {
@@ -905,6 +1060,16 @@ class Fighter {
       // hit items too
       match.itemsHitByAttack(this, box, a.damage);
     }
+  }
+
+  /* One target per hit unless the move is a multi-hit: then the same fighter can
+     be hit again once `rehit` ticks have passed (data.js derives that spacing from
+     the authored hit count, so a flurry actually flurries). */
+  rehitBlocked(target, a) {
+    const last = this.hitIds.get(target.id);
+    if (last === undefined) return false;
+    const gap = a.rehit || 1e9;
+    return (this.actionT - last) < gap;
   }
 
   /* ---------------- damage ---------------- */
