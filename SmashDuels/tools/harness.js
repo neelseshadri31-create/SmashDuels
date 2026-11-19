@@ -49,8 +49,16 @@ function makeCtx(rec) {
   };
   const ctx = {
     canvas: { width: 960, height: 540 },
-    save() { (rec.stack || (rec.stack = [])).push(m.slice()); rec.ops.push({ op: 'save' }); },
-    restore() { const s = rec.stack && rec.stack.pop(); if (s) m = s; rec.ops.push({ op: 'restore' }); },
+    // snapshot the paint state as well as the CTM: the renderer sets globalAlpha
+    // for a ground shadow and expects restore() to undo it, and a recorder that
+    // only tracks the matrix leaks that alpha onto every later op (tools/film.js
+    // reads alpha per op to composite the frame, so the leak would show up there)
+    save() { (rec.stack || (rec.stack = [])).push({ m: m.slice(), state: Object.assign({}, state) }); rec.ops.push({ op: 'save' }); },
+    restore() {
+      const s = rec.stack && rec.stack.pop();
+      if (s) { m = s.m; for (const k in s.state) state[k] = s.state[k]; }
+      rec.ops.push({ op: 'restore' });
+    },
     setTransform(a, b, c, d, e, f) { m = [a, b, c, d, e, f]; rec.ops.push({ op: 'setTransform' }); },
     resetTransform() { m = [1, 0, 0, 1, 0, 0]; },
     translate(x, y) { mul([1, 0, 0, 1, x, y]); rec.ops.push({ op: 'translate', x, y }); },
@@ -66,6 +74,10 @@ function makeCtx(rec) {
       else if (args.length === 2) { [dx, dy] = args; dw = img && img.width; dh = img && img.height; }
       rec.ops.push({
         op: 'drawImage', img, sx, sy, sw, sh, dx, dy, dw, dh,
+        // the paint state matters as much as the geometry for a rasteriser: the
+        // shadow and the invulnerability blink draw at partial alpha, and baked
+        // VFX layers composite additively over the body
+        alpha: state.globalAlpha, blend: state.globalCompositeOperation,
         matrix: m.slice(),
         world: [m[0] * dx + m[2] * dy + m[4], m[1] * dx + m[3] * dy + m[5]],
         anchorWorld: [

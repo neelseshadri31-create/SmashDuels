@@ -28,6 +28,10 @@ const FIGHTERS = {
   valor: {
     key: 'valor', artFacing: 1, name: 'VALOR', title: 'THE SWORDSMAN', archetype: 'All-Rounder',
     color: '#4aa3ff', theme: '#4aa3ff',
+    /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
+       hurtbox test in tools/animtest.js): a box shorter than the art is how you get
+       "I clearly hit their head and nothing happened". */
+    body: { w: 46, h: 105 },
     stats: { weight: 100, walk: 2.4, run: 5.4, air: 4.3, fall: 11.4, fastfall: 17.2, gravity: 0.62, jumps: 2, jumpV: 13.2, djumpV: 12.4, airJumps: 1, size: 1.0, traction: 0.55, airAccel: 0.34, dashFrames: 10 },
     locomotion: 'humanoid', weapon: 'sword', weaponLen: 46,
     palettes: [
@@ -67,6 +71,10 @@ const FIGHTERS = {
   grim: {
     key: 'grim', artFacing: 1, name: 'GRIM', title: 'THE COLOSSUS', archetype: 'Heavyweight',
     color: '#ff9330', theme: '#ff9330',
+    /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
+       hurtbox test in tools/animtest.js): a box shorter than the art is how you get
+       "I clearly hit their head and nothing happened". */
+    body: { w: 58, h: 124 },
     stats: { weight: 138, walk: 1.9, run: 4.1, air: 2.9, fall: 13.6, fastfall: 21.5, gravity: 0.86, jumps: 2, jumpV: 13.6, djumpV: 12.2, airJumps: 1, size: 1.22, traction: 0.5, airAccel: 0.26, dashFrames: 14 },
     locomotion: 'brute', weapon: 'fists', weaponLen: 0,
     palettes: [
@@ -106,6 +114,10 @@ const FIGHTERS = {
   astra: {
     key: 'astra', artFacing: 1, name: 'ASTRA', title: 'THE STARWEAVER', archetype: 'Floaty Zoner',
     color: '#c77dff', theme: '#c77dff',
+    /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
+       hurtbox test in tools/animtest.js): a box shorter than the art is how you get
+       "I clearly hit their head and nothing happened". */
+    body: { w: 42, h: 101 },
     stats: { weight: 76, walk: 2.1, run: 4.3, air: 3.5, fall: 7.4, fastfall: 11.6, gravity: 0.4, jumps: 3, jumpV: 12.6, djumpV: 11.4, airJumps: 2, size: 0.97, traction: 0.42, airAccel: 0.3, dashFrames: 9 },
     locomotion: 'mage', weapon: 'staff', weaponLen: 52,
     palettes: [
@@ -145,6 +157,10 @@ const FIGHTERS = {
   vesper: {
     key: 'vesper', artFacing: 1, name: 'VESPER', title: 'THE SHADE', archetype: 'Rushdown',
     color: '#2fd6bb', theme: '#2fd6bb',
+    /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
+       hurtbox test in tools/animtest.js): a box shorter than the art is how you get
+       "I clearly hit their head and nothing happened". */
+    body: { w: 40, h: 100 },
     stats: { weight: 72, walk: 2.9, run: 6.7, air: 5.1, fall: 11.8, fastfall: 18.4, gravity: 0.68, jumps: 2, jumpV: 12.8, djumpV: 12.2, airJumps: 1, size: 0.94, traction: 0.6, airAccel: 0.4, dashFrames: 8 },
     locomotion: 'ninja', weapon: 'daggers', weaponLen: 26,
     palettes: [
@@ -184,6 +200,10 @@ const FIGHTERS = {
   rook: {
     key: 'rook', artFacing: 1, name: 'ROOK', title: 'THE HEXSHOT', archetype: 'Projectile Zoner',
     color: '#22e08a', theme: '#22e08a',
+    /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
+       hurtbox test in tools/animtest.js): a box shorter than the art is how you get
+       "I clearly hit their head and nothing happened". */
+    body: { w: 48, h: 103 },
     stats: { weight: 94, walk: 2.3, run: 4.8, air: 3.7, fall: 11.6, fastfall: 17.6, gravity: 0.64, jumps: 2, jumpV: 13.0, djumpV: 12.2, airJumps: 1, size: 1.04, traction: 0.5, airAccel: 0.32, dashFrames: 10 },
     locomotion: 'gunner', weapon: 'rifle', weaponLen: 54,
     palettes: [
@@ -221,6 +241,79 @@ const FIGHTERS = {
 };
 
 const FIGHTER_KEYS = ['valor', 'grim', 'astra', 'vesper', 'rook'];
+
+/* ============================================================
+   FRAME-DATA TUNING PASS  —  one place, so every fighter moves alike
+   ------------------------------------------------------------
+   The numbers written into each move above are the design intent (how many
+   frames a move wants, and in what proportion).  This pass is what ships: it
+   keeps startup/active proportions per family and shortens the tail, because
+   measured on the previous data a jab spent 17 of its 22 ticks doing nothing
+   and a smash 30 of 52 — the single biggest reason the game reads as slow, and
+   why a fighter standing in a follow-through pose gets walked up and punished.
+
+   Damage, knockback, angles, boxes and hitboxes are deliberately untouched:
+   this changes how long a move takes, never what it does.
+   ============================================================ */
+const TUNE = {
+  jab:     { startup: 1.00, tail: 0.60, floor: 12 },
+  tilt:    { startup: 0.85, tail: 0.66, floor: 16 },
+  smash:   { startup: 1.00, tail: 0.60, floor: 26 },   // keep the telegraph; the charge reads it
+  dash:    { startup: 0.90, tail: 0.56, floor: 20 },
+  air:     { startup: 0.90, tail: 0.66, floor: 18 },
+  special: { startup: 0.95, tail: 0.80, floor: 22 },
+};
+function tuneFamily(kind) {
+  if (kind === 'jab') return 'jab';
+  if (kind === 'dashattack') return 'dash';
+  if (kind.includes('smash')) return 'smash';
+  if (kind.includes('air')) return 'air';
+  if (kind.includes('tilt') || kind === 'stilt') return 'tilt';
+  return 'special';
+}
+/* `active` is now the exact number of frames the hitbox is live — the resolver
+   used to check `t <= startup + active`, which made every move hit for one tick
+   longer than it was written, and put that extra tick past the end of the
+   animation window. */
+function tuneMove(m, kind, weight) {
+  const fam = tuneFamily(kind), t = TUNE[fam];
+  const startup = Math.max(kind === 'jab' ? 2 : 3, Math.min(m.startup, Math.round(m.startup * t.startup)));
+  const active = Math.max(1, m.active || 1);
+  const tail = Math.max(fam === 'smash' ? 9 : fam === 'jab' ? 4 : 5,
+    Math.round(Math.max(0, m.frames - m.startup - (m.active || 1)) * t.tail));
+  const out = Object.assign({}, m, {
+    startup, active, tail, frames: Math.max(t.floor, startup + active + tail),
+  });
+  // A heavier fighter lands heavier: aerials get their lag from the landing,
+  // which is what makes floaty characters feel light and Grim feel like a rock.
+  if (fam === 'air') out.landingLag = clamp(Math.round(weight / 16) + (kind === 'dair' ? 2 : 0), 3, 9);
+  /* `multi` is the number of EXTRA hits a move can land on the same target, so it
+     needs room in the window to do it: every hit gets its own live ticks with a
+     one-tick gap, and `rehit` is the spacing the resolver uses to re-arm the
+     target.  Vesper's Dagger Flurry was authored as a 2-hit flurry inside a
+     2-tick window with nothing re-arming it, so it hit exactly once — which is
+     precisely how "my second jab did nothing" gets reported as a hitbox bug. */
+  const hits = 1 + (out.multi || 0);
+  if (hits > 1) {
+    const per = Math.max(2, Math.ceil(active / hits));
+    out.rehit = per + 1;
+    out.active = per * hits + (hits - 1);
+    out.frames = Math.max(t.floor, out.startup + out.active + out.tail);
+  }
+  return out;
+}
+function tuneSpecial(sp) {
+  const t = TUNE.special;
+  if (sp.type === 'counter') return sp;               // a stance is timed by its window
+  const startup = Math.max(2, Math.min(sp.startup, Math.round((sp.startup || 4) * t.startup)));
+  const tail = Math.max(5, Math.round(Math.max(0, (sp.frames || 30) - (sp.startup || 4)) * t.tail));
+  return Object.assign({}, sp, { startup, frames: Math.max(t.floor, startup + tail) });
+}
+for (const k of FIGHTER_KEYS) {
+  const def = FIGHTERS[k], weight = def.stats.weight;
+  for (const kind in def.moves) def.moves[kind] = tuneMove(def.moves[kind], kind, weight);
+  for (const d in def.specials) def.specials[d] = tuneSpecial(def.specials[d]);
+}
 
 /* ============================================================
    STAGES
