@@ -26,7 +26,7 @@ const FIGHTERS = {
 
   /* ---------------- VALOR ---------------- */
   valor: {
-    key: 'valor', artFacing: -1, name: 'VALOR', title: 'THE SWORDSMAN', archetype: 'All-Rounder',
+    key: 'valor', artFacing: 1, name: 'VALOR', title: 'THE SWORDSMAN', archetype: 'All-Rounder',
     color: '#4aa3ff', theme: '#4aa3ff',
     stats: { weight: 100, walk: 2.4, run: 5.4, air: 4.3, fall: 11.4, fastfall: 17.2, gravity: 0.62, jumps: 2, jumpV: 13.2, djumpV: 12.4, airJumps: 1, size: 1.0, traction: 0.55, airAccel: 0.34, dashFrames: 10 },
     locomotion: 'humanoid', weapon: 'sword', weaponLen: 46,
@@ -104,7 +104,7 @@ const FIGHTERS = {
 
   /* ---------------- ASTRA ---------------- */
   astra: {
-    key: 'astra', artFacing: -1, name: 'ASTRA', title: 'THE STARWEAVER', archetype: 'Floaty Zoner',
+    key: 'astra', artFacing: 1, name: 'ASTRA', title: 'THE STARWEAVER', archetype: 'Floaty Zoner',
     color: '#c77dff', theme: '#c77dff',
     stats: { weight: 76, walk: 2.1, run: 4.3, air: 3.5, fall: 7.4, fastfall: 11.6, gravity: 0.4, jumps: 3, jumpV: 12.6, djumpV: 11.4, airJumps: 2, size: 0.97, traction: 0.42, airAccel: 0.3, dashFrames: 9 },
     locomotion: 'mage', weapon: 'staff', weaponLen: 52,
@@ -143,7 +143,7 @@ const FIGHTERS = {
 
   /* ---------------- VESPER ---------------- */
   vesper: {
-    key: 'vesper', artFacing: -1, name: 'VESPER', title: 'THE SHADE', archetype: 'Rushdown',
+    key: 'vesper', artFacing: 1, name: 'VESPER', title: 'THE SHADE', archetype: 'Rushdown',
     color: '#2fd6bb', theme: '#2fd6bb',
     stats: { weight: 72, walk: 2.9, run: 6.7, air: 5.1, fall: 11.8, fastfall: 18.4, gravity: 0.68, jumps: 2, jumpV: 12.8, djumpV: 12.2, airJumps: 1, size: 0.94, traction: 0.6, airAccel: 0.4, dashFrames: 8 },
     locomotion: 'ninja', weapon: 'daggers', weaponLen: 26,
@@ -182,7 +182,7 @@ const FIGHTERS = {
 
   /* ---------------- ROOK ---------------- */
   rook: {
-    key: 'rook', artFacing: -1, name: 'ROOK', title: 'THE HEXSHOT', archetype: 'Projectile Zoner',
+    key: 'rook', artFacing: 1, name: 'ROOK', title: 'THE HEXSHOT', archetype: 'Projectile Zoner',
     color: '#22e08a', theme: '#22e08a',
     stats: { weight: 94, walk: 2.3, run: 4.8, air: 3.7, fall: 11.6, fastfall: 17.6, gravity: 0.64, jumps: 2, jumpV: 13.0, djumpV: 12.2, airJumps: 1, size: 1.04, traction: 0.5, airAccel: 0.32, dashFrames: 10 },
     locomotion: 'gunner', weapon: 'rifle', weaponLen: 54,

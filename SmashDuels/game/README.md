@@ -15,21 +15,29 @@ python3 -m http.server 8080
 
 ## Animation
 
-Each fighter has **6 distinct hand-extracted concept-art poses** (`assets/frames/{key}_0..5.png`,
-bottom-aligned so feet never float). `render.js` maps game state → frame:
+Every fighter draws on **~95 hand-authored frames** sliced from its concept sheet into a
+packed atlas: `assets/atlas/{key}.png` + `assets/atlas/{key}.json` (built by
+`tools/slice_roster.py`, which reads `roster/*_spritesheet.png`).
 
-| state | frame(s) |
+| group | animations |
 |---|---|
-| idle | 0 ↔ 1 (breathing) |
-| walk | 1-3-5-3 cycle |
-| run | 2-4-2-5 cycle, forward lean |
-| jump / fall / land | 4 / 3 / 4 + squash |
-| crouch / shield | 3 / 5 |
-| attack | windup pose → strike pose → settle |
-| hurt / launch | 4, rotated back |
-| roll | 2-3-4 with a full body spin |
+| locomotion | idle · walk · run · jump · fall · land · dash |
+| ground | jab · utilt · stilt (forward tilt) · dtilt · usmash · ssmash · dsmash |
+| aerial | nair · fair · bair · uair · dair |
+| specials | nspecial · sspecial · uspecial · dspecial |
+| defence / misc | shield · shieldbreak · spotdodge · rollfwd · rollback · airdodge · grabbed · grab · throw · down · getup · respawn · taunt 1-3 |
+| reactions | hurt · launch · ko · crouch (derived: the source rows are re-composed with a lean, squash and a hit flash) |
 
-Palettes are baked per frame (6 variants: default, blue, green, magenta, gold, shadow).
+Each frame carries an anchor — the fitted cell's centre-x and the row's feet line — so a
+fighter stays planted while its animation plays instead of skating or jittering. VFX that
+was drawn separately from the pose (crescents, dust, projectiles) rides in the frame's
+`fx` list and is blitted additively.
+
+`render.js` maps game state → animation (`STATE_ANIM`), and an attack's `startup / active /
+dur` → a fraction of its row (`MOVE_ANIM`, `SPECIAL_ANIM`), so windup → strike → settle
+lines up with the hitbox instead of a fixed frame counter. Palettes are a per-variant tint
+of the whole atlas (6 variants: default, blue, green, magenta, gold, shadow). If a sheet is
+missing, `drawFighter` falls back to the procedural vector fighter.
 
 ## Controls
 
@@ -92,8 +100,42 @@ chiptune and SFX via WebAudio.
 | **Vesper** the Shade | Rushdown | Kunai Barrage · Shadowstep Dash · Viper Ascendant · Smoke Counter |
 | **Rook** the Hexshot | Projectile zoner | Hex Bullet Volley · Rune Lasso · Drone Grapple · Rune Mine |
 
-Fighter sprites and portraits are extracted from the generated concept sheets
-(`roster/*.png`), with the black background keyed to transparency.
+Fighter art is sliced out of the generated concept sheets (`roster/*.png`) by
+`tools/slice_roster.py`; the sheet's dithered background is keyed to transparency per
+component, and tiles are deduplicated so a reused pose costs one atlas rect.
+
+(needs numpy + scipy + Pillow; run from the project root, i.e. `SmashDuels/`)
+
+```bash
+python3 tools/slice_roster.py --report   # audit what the slicer recovered
+python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
+```
+
+## Tests
+
+The engine runs headless in node — no browser, no canvas (also from the project root):
+
+```bash
+node tools/simtest.js       # physics, stage collision, facing, state machine
+node tools/atlascheck.js    # atlases + the sprite renderer
+node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline
+```
+
+All three boot the shipped files (`js/core.js … js/match.js`, plus `js/render.js` for the atlas
+suite and `js/cloud.js` for the sync suite) inside a stubbed DOM, so the code under test is the
+code that runs in the browser. `cloudtest.js` also stubs `fetch` with a server that speaks the
+same protocol as the Postgres function in `supabase/migrations/`, so both sides of the wire are
+covered without a project. Pass a substring to filter, `V=1` for stacks.
+
+## Cloud saves (optional)
+
+Progress lives in `localStorage` (`js/core.js` → `SAVE`). `js/cloud.js` can additionally mirror
+it to one Supabase row per player so a second device picks up where the first left off —
+unlocks, Rift Coins, stats, records, challenges. It is off until you paste a project URL and
+publishable key in **RECORDS → CLOUD SAVES**, it never blocks play, and every failure path
+(offline, wrong key, project paused, 500) degrades to the local save. See
+[`../supabase/README.md`](../supabase/README.md) for the schema and the one dashboard toggle it
+needs.
 
 ## Files
 
@@ -110,6 +152,19 @@ game/
   js/match.js       match orchestration, camera, knockback resolution
   js/modes.js       Classic, Targets, Home-Run, Multi-Man
   js/ui.js          screens, HUD, main loop, debug hooks
+  js/cloud.js       optional cross-device save sync (see above)
+  assets/atlas/     {key}.png + {key}.json — packed animation atlases (generated)
+
+tools/
+  slice_roster.py   roster sheets → atlas + animation meta
+  harness.js        headless boot (stub DOM/canvas/audio) shared by the suites
+  simtest.js        simulation tests        · node tools/simtest.js
+  atlascheck.js     atlas + renderer tests  · node tools/atlascheck.js
+  cloudtest.js      save-sync tests         · node tools/cloudtest.js
+
+supabase/
+  README.md         project setup, what is stored, the sync contract
+  migrations/       player_saves + save_sync (applied, kept in step with this branch)
 ```
 
 `window.RR.step(n)` and `window.RR.makeAllCPU()` exist for automated testing.

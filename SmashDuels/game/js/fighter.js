@@ -399,15 +399,43 @@ class Fighter {
     }
     this.prevY = this.y;
 
-    // walls (below stage — can't pass through sides)
-    if (this.y > gd.y + 20) {
-      if (this.x > gd.x && this.x < gd.x + gd.w) {
-        // inside wall region: push out to nearest side
-        if (this.x < gd.x + gd.w / 2) this.x = gd.x - 24; else this.x = gd.x + gd.w + 24;
+    // the stage slab is solid from the sides; see confine()
+    this.confine(gd);
+  }
+
+  /* Keep a fighter out of the stage slab.
+   *
+   * This used to teleport anyone below `gd.y + 20` to a fixed offset outside
+   * the platform (±24px).  That had no lower bound, so a fighter knocked past
+   * the side of the stage was yanked sideways mid-fall, and combined with the
+   * separation clamp in Match it pinned 3-4 fighters against an invisible
+   * wall — the jitter/pinning at the stage edges, worst in 4v4/4-player.
+   * Now the slab is resolved as a real body, only while they are actually
+   * inside its vertical span, so they slide down the outside and get KO'd at
+   * the blast zone like any other. */
+  confine(gd) {
+    if (this.isMob) return;                     // mobs walk through, by design
+    const half = 24 * this.scale;
+    if (this.y > gd.y + 2 && this.y < gd.y + gd.h + 14) {
+      if (this.x > gd.x - half && this.x < gd.x + half) {
+        this.x = gd.x - half;
+        if (this.vx > 0) this.vx = -this.vx * 0.22;
+      } else if (this.x > gd.x + gd.w - half && this.x < gd.x + gd.w + half) {
+        this.x = gd.x + gd.w + half;
+        if (this.vx < 0) this.vx = -this.vx * 0.22;
       }
     }
+  }
 
-    // landing state end
+  /* How hard this fighter is to shove around (used by the separation solver). */
+  pushResist() {
+    let r = 1 + (this.weight - 100) / 240;
+    if (this.onGround) r += 0.9;
+    if (this.shieldHP > 0 || this.state === 'shield') r += 0.6;
+    if (this.state === 'ledge') r += 1.4;        // ledge hangs are tenacious
+    if (this.hitstun > 0 || this.state === 'launch' || this.state === 'helpless') r -= 0.6;
+    if (this.state === 'roll' || this.state === 'airdodge') r -= 0.25;
+    return Math.max(0.3, r);
   }
 
   landOn(top, match, platform, p) {
@@ -506,7 +534,9 @@ class Fighter {
     this.shieldDodging = true; this.shieldHP = 0;
     this.state = 'roll'; this.action = { type: 'roll', dur: 26 }; this.actionT = 0;
     this.rollDir = dir; this.invincT = 16;
-    this.facing = dir;
+    // facing is NOT snapped to the roll direction: a back-roll should still
+    // leave you looking at the opponent, and the old snap left every roll
+    // ending face-first into thin air (the "facing wrong way" report).
     AUDIO.sfx('dodge');
   }
   startSpotDodge(match) {
@@ -573,6 +603,20 @@ class Fighter {
   }
 
   startGrab(match) {
+    // grabs auto-turn toward their target (Melee-style).  Use the same
+    // candidate set the grab tests, so the animation and the hitbox agree;
+    // fall back to the nearest opponent so a whiffed grab still faces out.
+    let t = match && match.findGrabTarget ? match.findGrabTarget(this) : null;
+    if (!t && match) {
+      let bd = 200;
+      for (const o of match.fighters) {
+        if (o === this || o.eliminated || o.grabbedBy) continue;
+        if (match.sameTeam && match.sameTeam(this, o)) continue;
+        const d = Math.abs(o.x - this.x);
+        if (d < bd && Math.abs(o.y - this.y) < 84) { bd = d; t = o; }
+      }
+    }
+    if (t && Math.abs(t.x - this.x) > 2) this.facing = t.x > this.x ? 1 : -1;
     this.state = 'grab';
     this.action = { type: 'grabbing', dur: 30, poseType: 'grab', dir: 'f' };
     this.actionT = 0; this.grabAttempt = true;
