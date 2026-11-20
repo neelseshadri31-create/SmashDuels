@@ -321,7 +321,17 @@ def parts_of(mask, w, box, img_px):
                     op[xx - bx0, yy - by0] = tuple(img_px[xx, yy][:3]) + (255,)
         return out, (bx0, by0, bx1, by1)
 
-    return crop(body), crop(fx)
+    # The largest blob is the figure -- unless it is not a figure at all.  A body spans
+    # most of its cell's height; a smoke puff does not.  Vesper's recovery frame is
+    # mostly the smoke he stepped out of, and that puff is a bigger blob than the
+    # crouching ninja beside it, so trusting area alone would make the smoke the body:
+    # the fighter would be painted into the effect layer and faded in by vfxGate, and
+    # the row would measure its hitbox off a cloud.  When the biggest blob is too flat
+    # to be a pose, keep the frame as one baked tile -- which is what the roster rows
+    # that never needed a split already are.
+    if st[body_i]['bbox'][3] - st[body_i]['bbox'][1] < 0.55 * (y1 - y0):
+        return [(None, (x0, y0, x1, y1))]
+    return [g for g in (crop(body), crop(fx)) if g]
 
 
 def anchor_x(mask, w, box):
@@ -446,9 +456,15 @@ def main():
         wide = []
         sheet_px = sheet.load()
         for b in ink:
-            groups = [g for g in parts_of(mask, sw, b, sheet_px) if g]
+            groups = parts_of(mask, sw, b, sheet_px)
             if not groups:
                 sys.exit('%s.%s: a cell lost all its ink' % (args.key, name))
+            if groups[0][0] is None:
+                # too flat to split: the whole cell is one baked tile
+                box = groups[0][1]
+                w0 = max(4, int(round((box[2] - box[0]) * kr)))
+                h0 = max(4, int(round((box[3] - box[1]) * kr)))
+                groups = [(sheet.crop(box).convert('RGBA').resize((w0, h0), Image.Resampling.LANCZOS), box)]
             body_img, body_box = groups[0]
             if len(groups) > 1:
                 # an effect that reaches below the ground line is floor debris; the

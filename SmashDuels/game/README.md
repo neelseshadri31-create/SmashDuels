@@ -62,7 +62,9 @@ Where a row is *short* rather than merged — the sheets only drew two dash fram
 frames, and no dash-attack row at all — re-cutting cannot help, so the frames are drawn:
 `tools/slice_rows.py` takes a generated sheet of poses on a flat magenta field, splits it by
 ink mass (rows, then cells), scales a whole row to that fighter's reference height, keys its
-baked effect into a separate overlay tile so `vfxGate` can still fade it, packs the tiles into
+baked effect into a separate overlay tile so `vfxGate` can still fade it — but leaves the
+frame as one tile when the biggest blob in it is too flat to be a pose, because a smoke puff
+that happens to be wider than the ninja beside it is not the body — packs the tiles into
 space the atlas is not already using (growing the canvas if there is none) and rewrites the
 row in the JSON.  Idempotent per row, and `--key grim --revert` restores the atlas.
 
