@@ -102,7 +102,7 @@ def segment(counts, want, search=26):
     and is then nudged to the emptiest column within a short reach of it.
     """
     n = len(counts)
-    if want <= 1:
+    if not want or want <= 1:
         return [(0, n)] if any(counts) else []
     spans = [(0, n)]
     while len(spans) < want:
@@ -154,10 +154,15 @@ def split(sheet_mask, w, h, want_rows, want_cells):
     if dropped:
         print('  note: the sheet has %d more row(s) than asked for — the extra %d are ignored'
               % (dropped, dropped))
+    # A sheet off `tools/sheet_grid.py` has a different, deliberate cell count per row
+    # (6 idles, 8 runs, 4 landings).  Splitting every row with the largest count would
+    # cut the short rows through their poses, so a list means "this many, per row".
+    per = want_cells if isinstance(want_cells, (list, tuple)) else [want_cells] * len(rows)
     out = []
-    for (y0, y1, _) in rows:
+    for i, (y0, y1, _) in enumerate(rows):
+        want_cells_i = per[i] if i < len(per) else None
         xprof = project(sheet_mask, w, h, 0, w, y0, y1, 'x')
-        cells = [(a, b, 0) for (a, b) in segment(xprof, want_cells)]
+        cells = [(a, b, 0) for (a, b) in segment(xprof, want_cells_i)]
         boxes = []
         for (cx0, cx1, _) in cells:
             lo = hi = None
@@ -173,7 +178,40 @@ def split(sheet_mask, w, h, want_rows, want_cells):
                     hi = y
             if lo is not None:
                 boxes.append((cx0, lo, cx1, hi + 1))
-        out.append((y0, y1, boxes, len(boxes) != (want_cells or len(boxes))))
+        out.append((y0, y1, boxes, len(boxes) != (want_cells_i or len(boxes))))
+    return out
+
+
+def from_grid(mask, w, h, spec, rows):
+    """Row bands and cell columns straight off a `tools/sheet_grid.py` layout.
+
+    Same shape as `split()` returns, so nothing downstream knows the difference: one
+    (y0, y1, boxes, even) per row, and `boxes` one tight ink box per cell in the order
+    the grid tool laid them out.  A cell with no ink in it is an error rather than an
+    empty tile: a repeated pose is a choice, an empty one is a miscount.
+    """
+    layout = spec.get('layout') or []
+    if len(layout) != len(rows):
+        sys.exit('grid: the layout has %d row(s), the injection asked for %d'
+                 % (len(layout), len(rows)))
+    out = []
+    for i, name in enumerate(rows):
+        band = layout[i]
+        y0 = max(0, int(min(band['y'])))
+        y1 = min(h, int(max(band['y'])))
+        boxes = []
+        for j, (cx0, cx1) in enumerate(band['x']):
+            cx0, cx1 = max(0, int(cx0)), min(w, int(cx1))
+            lo = hi = None
+            for y in range(y0, y1):
+                base = y * w
+                if any(mask[base + x] for x in range(cx0, cx1)):
+                    lo = y if lo is None else lo
+                    hi = y
+            if lo is None:
+                sys.exit('grid: row %s cell %d is empty — the sheet lost a pose' % (name, j))
+            boxes.append((cx0, lo, cx1, hi + 1))
+        out.append((y0, y1, boxes, True))
     return out
 
 
@@ -361,6 +399,10 @@ def main():
     ap.add_argument('--sheet', default=None)
     ap.add_argument('--rows', default='dashattack,dash,rollfwd,rollback')
     ap.add_argument('--cells', default=None, help='expected cells per row, comma list')
+    ap.add_argument('--grid', default=None, help="an exact layout from tools/sheet_grid.py "
+                    "(its --json file): cut these cells instead of re-deriving them from ink "
+                    "mass, which a sheet of deliberately even-pitch poses does not need and "
+                    "which two identical neighbouring poses can defeat")
     ap.add_argument('--preview', default=None)
     ap.add_argument('--dry', action='store_true')
     ap.add_argument('--revert', action='store_true')
@@ -397,7 +439,18 @@ def main():
     mask = key_out(sheet.load(), sw, sh)
 
     # count of expected rows = the ones asked for
-    layout = split(mask, sw, sh, len(rows), max(expect) if expect else None)
+    # `expect` is a per-row cell count, and a row nobody constrained is None — so the
+    # hint passed to the splitter has to be the max of the numbers only (max() of a list
+    # holding None raises, which is what made an omitted `--cells` crash).
+    want_cells = [e for e in (expect or []) if e]
+    per_row = expect if all(expect) else (max(want_cells) if want_cells else None)
+    if args.grid:
+        with open(args.grid) as fh:
+            spec = json.load(fh)
+        layout = from_grid(mask, sw, sh, spec, rows)
+        expect = [len(b[2]) for b in layout]        # the grid is the count, by definition
+    else:
+        layout = split(mask, sw, sh, len(rows), per_row)
     if len(layout) != len(rows):
         sys.exit('%s: sheet split into %d rows, asked for %d — retake it or trim --rows'
                  % (args.key, len(layout), len(rows)))

@@ -592,6 +592,31 @@ const Sprites = (() => {
         const b = frameBox(at, ent);
         return b && usable(at, b.body, name) ? b.body : null;
       });
+      /* meta.geo / meta.geoBody — the geometry a row is *judged* by, when that is not the
+         row's own ink.  Everything here gives the drawing a vote on the hitbox and on the
+         hurtbox, which is right for a sheet cut by hand and wrong for a re-skin: drop a new
+         sheet over an old one and the sword gets longer, the resting pose gets wider, and a
+         jab quietly loses the extension it used to gain past the silhouette (a wider idle
+         swallows the reach a swing lived on).  So a re-skin carries the extents of the art
+         it replaced, captured by tools/atlas_geo.js before the pixels move, and only the
+         picture changes underneath it.  Rows the atlas does not name are measured as usual,
+         so hand-cut art still follows its own drawing. */
+      const geo = (name, cur) => {
+        const g = at.meta && at.meta[name];
+        const row = g && g[an];
+        if (!row || !row.length) return cur;
+        const m = row.length;
+        /* The new sheet does not have to run the same number of frames — 8 idles over a
+           6-frame row still describes the same blow — so the old extents are sampled
+           across the new length rather than truncated. */
+        return Array.from({ length: fl.length }, (_, i) => {
+          const b = row[m === fl.length ? i : Math.round(i * (m - 1) / Math.max(1, fl.length - 1))];
+          return b ? b.slice(0) : null;
+        });
+      };
+      const an = name;
+      at.box[an] = geo('geo', at.box[an]);
+      at.bodyBox[an] = geo('geoBody', at.bodyBox[an]);
       const d = rowDir(name);
       /* Reach is signed, and "further along the blow" always wins.  The vertical
          axis has to negate: the frame that paints furthest UP is the one with the
