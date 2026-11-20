@@ -10,6 +10,17 @@ const FRAME = 1; // logic frame unit
    padding at 60 Hz, so a wavedash-length input still comes out of it. */
 const SKID_FRAMES = 11;
 const DASH_KICK = 0.28;               // fraction of run speed added on a fresh tap
+/* Ledge grammar.  LEDGE_OUTSIDE is how far past the deck face a body has to be
+   before it counts as hanging rather than standing; LEDGE_AUTO_CLIMB is how long
+   a hang may last with no input at all — a fighter that got there by accident
+   must not be parked out of the fight (the old value was effectively 5 seconds). */
+const LEDGE_OUTSIDE = 4;
+const LEDGE_AUTO_CLIMB = 72;
+const DECK_LIP = 16;                  // px of overhang the deck still counts as floor
+const SLAB_EASE = 8;                  // px/tick the stage wall pushes an overlapping body out
+const HAZARD_REHIT = 45;              // ticks before a hazard may touch you again
+const ITEM_SWING = 24;                // ticks of recovery on a held item's swing/shot
+const GRAB_HOLD_MAX = 120;            // ticks a grab can hold an opponent, pummels included
 const GROUNDED_ACT = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'land',
   'shield', 'fall', 'doublejump', 'helpless', 'taunt'];
 const MOVABLE = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'shield',
@@ -54,8 +65,9 @@ class Fighter {
     this.dashT = 0; this.turnT = 0; this.runArmed = false; this.shieldDodging = false;
     this.hitstun = 0; this.hitlag = 0; this.shakeX = 0; this.shakeY = 0;
     this.invincT = 0; this.respawnT = 0; this.respawnDropT = 0; this.flashT = 0; this.hitT = 0;
+    this.hazardCD = 0; this.itemCd = 0;
     this.shieldHP = 0; this.shieldStun = 0; this.shieldT = 0;
-    this.action = null; this.actionT = 0; this.hitIds = new Map();
+    this.action = null; this.actionT = 0; this.hitIds = new Map(); this.hitCount = new Map();
     this.ledge = null; this.ledgeCD = 0; this.ledgeInvuln = 0;
     this.grabbing = null; this.grabbedBy = null; this.grabT = 0;
     this.groundDist = 0; this.onGround = false;
@@ -212,6 +224,8 @@ class Fighter {
   /* ---------------- main update ---------------- */
   update(match) {
     this.stateT++; this.animT++; this.hitT++;
+    if (this.hazardCD > 0) this.hazardCD--;
+    if (this.itemCd > 0) this.itemCd--;
     this.comboTimer = Math.max(0, this.comboTimer - 1);
     if (this.comboTimer === 0) this.comboCount = 0;
     for (const k in this.buffs) if (this.buffs[k] > 0) {
@@ -295,8 +309,19 @@ class Fighter {
       if (this.updateAction(match)) return;
     }
 
-    // stale 'launch' with no hitstun → normal aerial drift
-    if (this.state === 'launch' && this.hitstun <= 0) this.state = this.onGround ? 'idle' : 'fall';
+    /* Stale hit states with no hitstun left → get up.
+       The check used to cover `launch` only, so a fighter who came out of a tumble
+       while standing on the deck stayed in `hitstun` indefinitely: the state is not
+       in the movement-lock list, but it *is* what keeps `applyPhysics` on the 0.995
+       air drag instead of ground friction and what keeps the tumble animation on
+       screen.  In a 4-player CPU match that showed up as someone lying on the floor
+       for nine seconds, sliding a third of a pixel a tick, until a stray hit or a
+       KO happened to move them on — the single most-reported shape of "the fighter
+       is stuck". */
+    if ((this.state === 'launch' || this.state === 'hitstun') && this.hitstun <= 0) {
+      this.state = this.onGround ? 'idle' : 'fall';
+      this.animT = 0;
+    }
 
     // ---- shield
     this.updateShield(match);
@@ -464,6 +489,18 @@ class Fighter {
     this.x += this.vx;
     this.y += this.vy;
 
+    /* Ride the platform.  A fighter standing on a mover has to inherit its travel
+       for the tick, otherwise the Ember Foundry lift and the Comet Reach blocks
+       slide out from under them and drop them — and a descending platform left a
+       standing fighter floating for a tick, then falling, then snapped back down:
+       that one-frame bounce every time the block changed direction is what read as
+       "collision problems with the platforms".  Applied before the stage tests so
+       the surface check below still owns the final position. */
+    if (this.onPlatform) {
+      const p = this.onPlatform;
+      if (p.dx || p.dy) { this.x += p.dx || 0; this.y += p.dy || 0; }
+    }
+
     // stage collision
     const stage = match.stage;
     const gd = stage.ground;
@@ -471,11 +508,9 @@ class Fighter {
     const wasY = this.y;
     this.onGround = false; this.onPlatform = null;
 
-    // drop-through
-    if (this.dropThroughT > 0) { }
-    else {
+    {
       // main platform top — solid from above only, never snapped up from below
-      if (this.x > gd.x - 16 && this.x < gd.x + gd.w + 16) {
+      if (this.x > gd.x - DECK_LIP && this.x < gd.x + gd.w + DECK_LIP) {
         const top = gd.y;
         const crossed = this.y - this.vy <= top + 2;   // was above the surface last frame
         if (this.y >= top - 1 && this.vy >= 0 && crossed) {
@@ -487,7 +522,9 @@ class Fighter {
           }
         }
       }
-      // platforms
+    }
+    // soft platforms: a drop-through ignores these, never the deck above
+    if (this.dropThroughT <= 0) {
       for (const p of stage.platforms) {
         if (this.respawnDropT > 0) break;              // drop-in ignores soft platforms
         const px = p.cx !== undefined ? p.cx : p.x, py = p.cy !== undefined ? p.cy : p.y;
@@ -519,11 +556,25 @@ class Fighter {
     if (this.isMob) return;                     // mobs walk through, by design
     const half = 24 * this.scale;
     if (this.y > gd.y + 2 && this.y < gd.y + gd.h + 14) {
-      if (this.x > gd.x - half && this.x < gd.x + half) {
-        this.x = gd.x - half;
+      /* The slab is a wall, but it is a wall at the DECK FACE, not at the body
+         box: a fighter standing beside the stage keeps its footing.  Ejecting the
+         whole half-width every tick teleported a shoved fighter ~24px out into
+         the void, and the solver then pushed them back — that argument is what
+         made the crowd vibrate against an invisible wall in 4-player.  A shallow
+         overlap is eased out (SLAB_EASE px/tick); only a body actually inside the
+         rock is ejected in one go. */
+      const lim0 = gd.x - half, lim1 = gd.x + gd.w + half;
+      if (this.x > lim0 && this.x < gd.x) {
+        this.x = Math.max(lim0, this.x - SLAB_EASE);
         if (this.vx > 0) this.vx = -this.vx * 0.22;
-      } else if (this.x > gd.x + gd.w - half && this.x < gd.x + gd.w + half) {
-        this.x = gd.x + gd.w + half;
+      } else if (this.x >= gd.x && this.x < gd.x + half) {
+        this.x = lim0;
+        if (this.vx > 0) this.vx = -this.vx * 0.22;
+      } else if (this.x < lim1 && this.x > gd.x + gd.w) {
+        this.x = Math.min(lim1, this.x + SLAB_EASE);
+        if (this.vx < 0) this.vx = -this.vx * 0.22;
+      } else if (this.x <= gd.x + gd.w && this.x > gd.x + gd.w - half) {
+        this.x = lim1;
         if (this.vx < 0) this.vx = -this.vx * 0.22;
       }
     }
@@ -703,7 +754,7 @@ class Fighter {
       aerialDir: kind === 'nair' ? 'n' : kind === 'fair' ? 'f' : kind === 'bair' ? 'b' : kind === 'uair' ? 'u' : 'd',
       charge: !!m.charge, dirFacing: this.facing,
     });
-    this.actionT = 0; this.hitIds = new Map();
+    this.actionT = 0; this.hitIds = new Map(); this.hitCount = new Map();
     this.charging = false; this.chargeT = 0; this.forceRelease = false;
     // restart the animation clock with the action: the strike tile has to land on
     // the startup frame, so a mid-slide actionT would otherwise start it late
@@ -747,7 +798,7 @@ class Fighter {
     // keep the move's own kind (projectile / dash / recover / counter / mine …)
     // — overwriting `type` with 'special' made every special-type branch dead
     this.action = Object.assign({}, sp, { dur: sp.frames, kind: 'special', specialType: sp.type, type: 'special', specialKey: dir, poseType: 'special', specialDir: dir });
-    this.actionT = 0; this.hitIds = new Map(); this.specPhase = 'startup';
+    this.actionT = 0; this.hitIds = new Map(); this.hitCount = new Map(); this.specPhase = 'startup';
     if (sp.cooldown) this.cooldowns[dir] = sp.cooldown;
     this.specialData = { fired: 0, timer: 0, projFired: false, orbFired: false, dashFired: false, tpFired: false, lassoFired: false, riseHit: false, mineFired: false };
     if (dir === 'u') { this.usedUpB = true; }
@@ -842,8 +893,8 @@ class Fighter {
     }
     if (a.type === 'holding') {
       // holding a grabbed opponent
-      const t = this.grabbing;
-      if (!t || t.eliminated) { this.grabbing = null; if (t) t.grabbedBy = null; this.action=null; this.state='idle'; return false; }
+      const victim = this.grabbing;
+      if (!victim || victim.eliminated) { this.grabbing = null; if (victim) victim.grabbedBy = null; this.action = null; this.state = 'idle'; return false; }
       const inp = this.input;
       if (inp.attackP) { match.pummel(this); this.actionT = 0; }
       if (inp.leftP || this.input.left && this.actionT > 4 && this.dirIsTap('left')) { match.throwGrabbed(this, 'b'); return true; }
@@ -854,7 +905,14 @@ class Fighter {
       if (inp.downP) { match.throwGrabbed(this, 'd'); return true; }
       if (inp.leftP) { match.throwGrabbed(this, 'b'); return true; }
       if (inp.rightP) { match.throwGrabbed(this, 'f'); return true; }
-      if (t >= 60) { match.throwGrabbed(this, 'f'); return true; }
+      /* The hold used to end on `t >= 60`, but `t` had been shadowed by the grabbed
+         *fighter*, so the comparison was always false and the throw never happened.
+         Nothing else releases a grab in this engine — there is no mash-out — so a CPU
+         that grabbed and held attack pummelled its victim for as long as it liked
+         (108 frames and counting on Ember Foundry) with the other player frozen in
+         `grabbed`; at a stage edge that is exactly "my fighter is stuck".  `grabT` is
+         the hold clock, and unlike `actionT` a pummel does not restart it. */
+      if (++this.grabT >= GRAB_HOLD_MAX) { match.throwGrabbed(this, 'f'); return true; }
       return true;
     }
     if (a.type === 'grabbing') {
@@ -1036,6 +1094,17 @@ class Fighter {
         if (match.sameTeam(this, target)) continue;
         if (this.rehitBlocked(target, a)) continue;
         if (target.invincible) continue;
+        /* A move may only spend the hits it was authored with on one target, and
+           that is a loop-breaker rather than flavour: every hit refreshes hitlag,
+           hitlag freezes `actionT`, and `active` is counted in `actionT` — so the
+           window of a two-hit flurry never advances far enough to close, the rehit
+           gap re-arms a tick later, and the two fighters juggle each other in place
+           forever.  A CPU 4-player match spent 1232 frames (20 seconds, 40 hits)
+           locked exactly like that with nobody able to move. */
+        const cap = 1 + (a.multi || 0);
+        const spent = (this.hitCount && this.hitCount.get(target.id)) || 0;
+        if (spent >= cap) continue;
+        if (this.hitCount) this.hitCount.set(target.id, spent + 1);
         if (!aabb(box, target.hurtbox)) continue;
         // shield?
         if (target.shieldHP > 0 && !a.grab) {
@@ -1088,17 +1157,23 @@ class Fighter {
   }
 
   /* ---------------- ledge ---------------- */
+  /* A ledge is the deck FACE, so it can only be caught from outside it.  The old
+     test was a 30px window around the face with no side preference, so a fighter
+     the crowd solver had merely shoved a few pixels past gd.x — still standing
+     over solid floor, never off-stage — was snapped into a ledge-hang nobody asks
+     for.  In 4-player that was the whole "my character gets stuck on the sides". */
   tryLedgeGrab(match) {
     if (this.ledgeCD > 0 || this.state === 'ledge' || this.usedUpB && this.ledgeGrabsThisAir === 1) return;
     const gd = match.stage.ground;
     if (this.vy < -1) return;
     const edges = [{ side: -1, x: gd.x }, { side: 1, x: gd.x + gd.w }];
     for (const e of edges) {
-      if (Math.abs(this.x - e.x) < 30 && Math.abs(this.y - gd.y) < 40 && this.y > gd.y - 70) {
-        // must be approaching from outside/below
-        this.snapLedge(match, e.side, e.x);
-        return true;
-      }
+      if (Math.abs(this.y - gd.y) > 40 || this.y <= gd.y - 70) continue;
+      // how far past the face we actually are: negative means we are over the deck
+      const beyond = e.side < 0 ? gd.x - this.x : this.x - (gd.x + gd.w);
+      if (beyond < LEDGE_OUTSIDE || beyond > 30 + LEDGE_OUTSIDE) continue;
+      this.snapLedge(match, e.side, e.x);
+      return true;
     }
     return false;
   }
@@ -1121,7 +1196,15 @@ class Fighter {
     if (inp.downP) {
       this.state = 'fall'; this.vx = this.facing * 2; this.vy = 2; this.ledge = null; this.ledgeCD = 30; return;
     }
-    if (this.stateT > 300) { this.state = 'fall'; this.vy = 2; this.ledge = null; }
+    /* Nobody hangs forever.  The only exits used to be a button press, so a CPU
+       busy with something else — or a player mashing nothing — sat in an
+       invulnerable ledge-hang for five seconds.  Climb rather than drop: dropping
+       puts you back off-stage, straight into the pile that shoved you there. */
+    if (this.stateT > LEDGE_AUTO_CLIMB) {
+      this.ledgeGetup(match, 'climb');
+      this.ledgeCD = 12;          // half the usual lockout: this get-up was the engine's, not the player's
+      return;
+    }
   }
   ledgeGetup(match, kind) {
     const gd = match.stage.ground;
@@ -1228,7 +1311,7 @@ class Fighter {
     this.held = null; this.hasSmashBall = false;
     this.buffs = { star: 0, mushroom: 0, poison: 0, metal: 0, bunny: 0, flower: 0 };
     this.grabbedBy = null; this.grabbing = null;
-    this.ledge = null; this.finalActive = 0;
+    this.ledge = null; this.finalActive = 0; this.hazardCD = 0; this.itemCd = 0;
     this.action = null;
     this.respawnPlatformT = 70;
   }

@@ -11,11 +11,14 @@ class Camera {
     this.W = W; this.H = H;
     this.x = 0; this.y = -180; this.zoom = 1;
     this.tx = 0; this.ty = -180; this.tz = 1;
+    this.px = 0; this.py = -180; this.pz = 1;   // last tick's state, for sub-tick blending
     this.shakeAmt = 0; this.shakeT = 0;
     this.sx = 0; this.sy = 0;
     this.punch = 0;
   }
   update(fighters, dt = 1) {
+    // where this frame started from, so the draw pass can render between two ticks
+    this.px = this.x; this.py = this.y; this.pz = this.zoom;
     let mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9;
     let n = 0;
     for (const f of fighters) {
@@ -123,51 +126,93 @@ class Match {
 
   /* ---------------- fighter separation ----------------
    *
-   * The old solver pushed both fighters 50/50 and then clamped both to the
-   * stage footprint ±120.  Two failure modes showed up at the sides of the
-   * stage and scaled with the number of bodies: a fighter already against the
-   * edge could not move, so the other one kept walking through them, and once
-   * the clamp bit the pair vibrated (every frame's push was undone by the next
-   * frame's clamp).  In 4v4 / 4-player that pinned the whole crowd against an
-   * invisible wall mid-scramble.
+   * The old solver pushed both fighters 50/50 and then clamped both to the stage
+   * footprint ±120.  Two failure modes showed up at the sides of the stage and
+   * scaled with the number of bodies: a fighter already against the edge could
+   * not move, so the other one kept walking through them, and once the clamp bit
+   * the pair vibrated (every frame's push was undone by the next frame's clamp).
+   * In 4v4 / 4-player that pinned the whole crowd against an invisible wall
+   * mid-scramble — and pinned there long enough to be KO'd by their own pile.
    *
-   * Now the correction is shared by push-resistance (grounded, heavy, shielded
-   * and ledge-hanging fighters are hard to move; hitstun fighters are easy), a
-   * blocked fighter passes its share to the other one, airborne fighters take a
-   * little momentum so a shove actually separates, and the only geometry that
-   * confines a fighter is the stage slab itself (Fighter.confine). */
+   * Three rules make it converge:
+   *   • the correction is shared by push-resistance (grounded, heavy, shielded
+   *     and ledge-hanging fighters are hard to move; hitstun fighters are easy);
+   *   • a correction is never bigger than the room that fighter actually has, so
+   *     a body with its back to the deck edge hands its share to the one that can
+   *     still move — the crowd unwinds toward the middle instead of sawing;
+   *   • three passes per tick, because a four-body pile is a chain: unwinding one
+   *     pair at a time left the far end of the pile still overlapping forever.
+   *
+   * Fighter.confine stays the only geometry that confines a fighter; the solver
+   * now agrees with it instead of arguing with it. */
   separateFighters() {
     const gd = this.stage.ground;
     const fs = this.fighters;
-    const STEP = 3.0;                              // max correction per fighter
-    for (let i = 0; i < fs.length; i++) {
-      const a = fs[i];
-      if (!a || a.eliminated || a.isMob) continue;
-      for (let j = i + 1; j < fs.length; j++) {
-        const b = fs[j];
-        if (!b || b.eliminated || b.isMob) continue;
-        // a grab keeps its victim attached — don't fight that
-        if (a.grabbing === b || b.grabbing === a) continue;
-        if (a.grabbedBy || b.grabbedBy) continue;
-        const vSpan = 44 * (a.scale + b.scale);
-        if (Math.abs(a.y - b.y) > vSpan) continue;         // different heights
-        const minGap = 26 * (a.scale + b.scale) + 8;
-        const dx = b.x - a.x, adx = Math.abs(dx);
-        if (adx >= minGap) continue;
-        const dir = adx < 0.6 ? (a.x <= b.x ? 1 : -1) : (dx > 0 ? 1 : -1);
-        const overlap = minGap - adx;
-        const ra = a.pushResist(), rb = b.pushResist(), tot = (ra + rb) || 1;
-        let pa = Math.min(STEP, overlap * (rb / tot) * 0.5);
-        let pb = Math.min(STEP, overlap * (ra / tot) * 0.5);
-        const ax0 = a.x, bx0 = b.x;
-        a.x -= dir * pa; b.x += dir * pb;
-        a.confine(gd); b.confine(gd);
-        // hand a blocked fighter's leftover to the one that can move
-        const mA = Math.abs(a.x - ax0), mB = Math.abs(b.x - bx0);
-        if (mA < pa * 0.6 && mB >= pb * 0.6) { b.x += dir * Math.min(STEP, pa - mA); b.confine(gd); }
-        else if (mB < pb * 0.6 && mA >= pa * 0.6) { a.x -= dir * Math.min(STEP, pb - mB); a.confine(gd); }
-        if (!a.onGround && a.hitstun <= 0 && a.canAct()) a.vx -= dir * 0.05 * pa;
-        if (!b.onGround && b.hitstun <= 0 && b.canAct()) b.vx += dir * 0.05 * pb;
+    const STEP = 3.0;                              // max correction per fighter, per pass
+    const PASSES = 3;                              // a four-pile needs more than one sweep
+    /* How far a body may travel in `d` before the push itself walks it off the
+       deck.  This is the piece the old solver had no notion of: it applied a
+       push, then let Fighter.confine undo it, then applied the same push again —
+       near a stage edge the two never agreed, so the crowd pinned itself there.
+       The lip is the same DECK_LIP the ground test uses, so a fighter the solver
+       hands off to a neighbour is never left standing on nothing. */
+    const room = (f, d) => {
+      if (f.y > gd.y + 6) return Infinity;      // below the deck top: past the stage already
+      const lo = gd.x - DECK_LIP + 2, hi = gd.x + gd.w + DECK_LIP - 2;
+      return d > 0 ? hi - f.x : f.x - lo;
+    };
+    /* Who is driving the collision.  Two grounded fighters used to split every
+       correction 50/50, so walking into a wall of idling bodies cost the walker as
+       much ground as it gave them and a player pressed against the side of the stage
+       advanced at a pixel a tick — "stuck" felt exactly like that.  A fighter with
+       a direction held is now harder to shove backwards than one standing still. */
+    const drive = (f, d) => {
+      if (!f.onGround || f.hitstun > 0 || !f.input) return 1;
+      const want = f.horiz ? f.horiz() : 0;
+      return want === d && want !== 0 ? 1.8 : 1;
+    };
+    /* Something else owns this fighter's position — a ledge hang, or a victim
+       being carried by a grab.  Pushing them is pointless (the state snaps them
+       back next tick), so the whole correction goes to whoever can move. */
+    const held = (f) => f.state === 'ledge' || f.grabbedBy;
+    const moveBy = (f, d, amt) => {
+      if (!(amt > 0)) return 0;
+      const got = Math.min(amt, Math.max(0, room(f, d)));
+      if (got > 0.01) { f.x += d * got; f.confine(gd); }
+      return got;
+    };
+    for (let pass = 0; pass < PASSES; pass++) {
+      for (let i = 0; i < fs.length; i++) {
+        const a = fs[i];
+        if (!a || a.eliminated || a.isMob) continue;
+        for (let j = i + 1; j < fs.length; j++) {
+          const b = fs[j];
+          if (!b || b.eliminated || b.isMob) continue;
+          if (a.grabbing === b || b.grabbing === a) continue;   // a grab keeps its victim attached
+          const vSpan = 44 * (a.scale + b.scale);
+          if (Math.abs(a.y - b.y) > vSpan) continue;            // different heights
+          const minGap = 26 * (a.scale + b.scale) + 8;
+          const dx = b.x - a.x, adx = Math.abs(dx);
+          if (adx >= minGap - 0.5) continue;                    // 0.5px of slack: no ticking at the goal
+          const dir = adx < 0.6 ? (a.x <= b.x ? 1 : -1) : (dx > 0 ? 1 : -1);
+          const overlap = minGap - adx;
+          const ha = held(a), hb = held(b);
+          if (ha && hb) continue;                                // neither of them can be moved
+          const ra = a.pushResist() * drive(a, dir), rb = b.pushResist() * drive(b, -dir);
+          const tot = (ra + rb) || 1;
+          let wantA = ha ? 0 : Math.min(STEP, overlap * (rb / tot) * 0.5);
+          let wantB = hb ? 0 : Math.min(STEP, overlap * (ra / tot) * 0.5);
+          if (ha || hb) { if (ha) wantB = STEP; else wantA = STEP; }
+          const gotA = moveBy(a, -dir, wantA), gotB = moveBy(b, dir, wantB);
+          // whatever a blocked fighter could not absorb goes to the other one
+          let left = (wantA - gotA) + (wantB - gotB);
+          if (left > 0.05) {
+            if (!ha) { const g = Math.min(STEP, left); left -= moveBy(a, -dir, g); }
+            if (!hb && left > 0.05) moveBy(b, dir, Math.min(STEP, left));
+          }
+          if (gotA > 0 && !a.onGround && a.hitstun <= 0 && a.canAct()) a.vx -= dir * 0.05 * gotA;
+          if (gotB > 0 && !b.onGround && b.hitstun <= 0 && b.canAct()) b.vx += dir * 0.05 * gotB;
+        }
       }
     }
   }
@@ -186,13 +231,16 @@ class Match {
     if (this.paused) { this.cam.update(this.fighters); return; }
     this.time += 16.67;
 
-    // moving platforms
+    // moving platforms — and how far they travelled this tick, which is what a
+    // fighter or an item standing on one inherits (see Fighter.applyPhysics)
     for (const p of this.stage.platforms) {
       if (p.move) {
         const off = Math.sin(this.frame * p.move.speed + p.phase) * p.move.amp;
+        const cx0 = p.cx, cy0 = p.cy;
         if (p.move.axis === 'x') p.cx = p.baseX + off; else p.cy = p.baseY - Math.abs(off) * 0.5 - off * 0.5;
         p.x = p.cx; p.y = p.cy;
-      }
+        p.dx = p.cx - cx0; p.dy = p.cy - cy0;
+      } else { p.dx = 0; p.dy = 0; }
     }
 
     // resolve active grabs every frame (even during intro)
@@ -379,7 +427,9 @@ class Match {
       for (const f of this.fighters) {
         if (f.eliminated) continue;
         if (f.y > hz.y) {
-          this.hitFighter(null, f, { damage: hz.dmg / 2, bkb: 26, kbs: 10, angle: 85, hazard: 1 });
+          if (f.hazardCD > 0) continue;
+          f.hazardCD = HAZARD_REHIT;
+          this.hitFighter(null, f, { damage: hz.dmg, bkb: 26, kbs: 10, angle: 85, hazard: 1 });
           if (f.y > hz.y + 160) this.koFighter(f, null);
         }
       }
@@ -387,12 +437,22 @@ class Match {
     if (hz.type === 'pillar') {
       this.pillarT = (this.pillarT || 0) + 1;
       const cyc = this.pillarT % hz.period;
-      if (cyc === 1) this.pillarActive = true;
+      if (cyc === 1) { this.pillarActive = true; this.pillarHit = new Set(); }   // one pass of the beam, one hit each
       if (cyc === 60) this.pillarActive = false;
       if (this.pillarActive && cyc < 60) {
+        /* One hit per rising cycle, per fighter.  The beam used to be tested every
+           tick for all 60 ticks it was up, so standing in it (or jumping over it —
+           the beam reaches the top of the screen) took the pillar's whole damage
+           budget ten times over and re-launched the victim on each tick, which is
+           exactly the "collision with things" feeling: you never left the pillar,
+           you were juggled by it until you left the stage. */
         for (const f of this.fighters) {
-          if (f.eliminated) continue;
-          if (Math.abs(f.x - hz.x) < hz.w / 2 + 18) this.hitFighter(null, f, { damage: hz.dmg / 6, bkb: 12, kbs: 4, angle: 90, hazard: 1 });
+          if (f.eliminated || this.pillarHit.has(f.id) || f.hazardCD > 0) continue;
+          if (Math.abs(f.x - hz.x) < hz.w / 2 + 18) {
+            this.pillarHit.add(f.id);
+            f.hazardCD = HAZARD_REHIT;
+            this.hitFighter(null, f, { damage: hz.dmg, bkb: 12, kbs: 4, angle: 90, hazard: 1 });
+          }
         }
         if (cyc % 6 === 0) this.fx.particle({ x: hz.x + rand(-hz.w / 2, hz.w / 2), y: -10, vx: 0, vy: -6, life: 20, size: rand(3, 7), color: '#2fd6bb', grav: 0, drag: 1, shape: 'spark' });
       }
@@ -529,7 +589,8 @@ class Match {
     if (!t) return;
     this.hitFighter(attacker, t, { damage: 2, bkb: 3, kbs: 0, angle: 90, pummel: 1, noLaunch: 1 });
     t.hitstun = 0; // keep grabbed
-    attacker.grabT = 0;
+    // NB: grabT (the hold clock that ends the grab) deliberately does NOT reset here,
+    // or mashing attack would extend the hold without limit.
     AUDIO.sfx('grab');
   }
 
@@ -702,7 +763,15 @@ class Match {
   useHeld(f) {
     const it = f.held;
     if (!it) return false;
+    /* One swing per ITEM_SWING ticks, whoever asked for it.  The player pays that
+       cost because Fighter's attack press puts them in a 24-tick item action; the
+       CPU goes straight through here, and until now nothing said no — an AI holding
+       a beamsword re-hit every frame it kept the button down, 11% a tick, 999% in
+       two seconds, and the refreshed hitlag froze both fighters for the rest of the
+       round (519 hits inside one 900-frame lock on Rune Range). */
+    if (f.itemCd > 0 || f.hitstun > 0 || f.eliminated) return false;
     const d = it.def;
+    f.itemCd = ITEM_SWING;
     if (d.cat === 'shoot') {
       if (it.ammo === undefined) it.ammo = d.ammo;
       if (it.ammo <= 0) { f.held = null; it.dead = true; return false; }

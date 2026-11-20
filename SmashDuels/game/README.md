@@ -39,6 +39,15 @@ lines up with the hitbox instead of a fixed frame counter. Palettes are a per-va
 of the whole atlas (6 variants: default, blue, green, magenta, gold, shadow). If a sheet is
 missing, `drawFighter` falls back to the procedural vector fighter.
 
+**Fluidity is a draw-rate problem, not a frame-count one.** The simulation is a fixed 60 Hz
+step, so on a 120/144 Hz panel half the frames would show the same tick twice — 13 stuck
+frames across a run row, measured. `Sprites.beginFrame(match, alpha)` therefore leads each drawn
+frame a fraction of a tick into the next one (fighters, items, projectiles, summons *and* the
+camera, so nothing slides relative to anything else), clamped to the travel the step actually
+made: an impulse above 1.25 px/tick, a hitlag freeze or a wall that scrubs the velocity cancels
+the lead for that frame rather than drawing a move the sim then takes back. At 60 Hz `alpha` is
+0 and the whole path is a no-op, byte for byte.
+
 Two rules keep the picture and the collision honest, because the sheets do not always
 draw a whole swing: **an attack's phases drive both** (`vfxGate` fades a baked crescent
 in across the wind-up and holds it at full strength exactly while the hitbox is live;
@@ -57,10 +66,18 @@ renderer asked for — plus the live hitbox and hurtbox of that same tick — an
 sheet and an animated GIF per fighter (needs Pillow; nothing else):
 
 ```bash
-node tools/film.js valor                     # record one fighter's rows
+node tools/film.js valor                     # record one fighter's rows at 60 Hz
+node tools/film.js valor --hz=120 --blend=0  # …as a 120 Hz panel sees it, blending off
 python3 tools/film_render.py valor            # → anim-films/valor.film.png / .gif
 python3 tools/film_render.py --rows fsmash,walk,dash   # just those rows
+python3 tools/film_render.py valor --cols 13  # tile count per row (13 = one per tick)
 ```
+
+`--hz` records the frames *between* ticks as well as the tick itself, and the contact sheet
+then counts **stuck frames**: consecutive drawn frames that blit the same tile at the same x/y.
+That is the whole of "running feels laggy" as a number, and it is how a blend or a lead gets
+reviewed without a browser — a stuck cell is outlined in red, a blended one is tagged `α0.5`.
+`--blend=0` turns the sub-tick lead off for the comparison.
 
 It is the shipped `Sprites.drawSpriteFighter`, so what the film shows is what the game
 paints; it is not a browser, so treat it as ground truth for timing, anchors, stride sync
@@ -88,7 +105,9 @@ Gamepads are detected automatically for both players. `M` mutes audio, `Esc` pau
 - Jab, three tilts, three smash attacks (chargeable), dash attack
 - Five aerials per fighter including down-air spikes
 - Four specials per fighter: projectile, dash, recovery, counter/trap
-- Grabs, pummelling and four directional throws — grabs beat shields
+- Grabs, pummelling and four directional throws — grabs beat shields; a hold that is never
+  thrown releases on its own after `GRAB_HOLD_MAX` = 120 ticks, so nobody is pinned by a grab
+- One move lands at most its authored hits (`1 + multi`) on the same target per action
 
 **Defence (§5, §6)**
 - Shrinking breakable shield with directional aiming and break stun
@@ -99,13 +118,16 @@ Gamepads are detected automatically for both players. `M` mutes audio, `Esc` pau
 **Items (§8)** — 21 items: battering (beam sword, home-run bat, star rod), throwing (bob-omb,
 shell, bumper), shooting (ray gun, fire flower), healing (heart, tomato, food), status
 (star, mushrooms, metal box, bunny hood), containers (crate, capsule), summons, Smash Ball,
-Hammer. Item frequency and individual toggles.
+Hammer. Item frequency and individual toggles. A swing or shot of a held item costs
+`ITEM_SWING` = 24 ticks, for the CPU's own item path as well as the player's button.
 
 **Final Smash (§7)** — Smash Ball spawns and floats, breaks under damage, grants an
 aura; press special for a screen-clearing super.
 
-**Stages (§9)** — 6 stages with pass-through platforms, moving platforms, and hazards
-(lava pools, timed pillar). Battlefield- and Final-Destination-style layouts included.
+**Stages (§9)** — 6 stages with pass-through platforms, moving platforms (a fighter — and an
+item — standing on a mover rides its `p.dx/p.dy` for the tick), and hazards (lava pools, timed
+pillar) that re-arm on a 45-tick `HAZARD_REHIT` rather than billing you every frame of contact.
+Battlefield- and Final-Destination-style layouts included.
 
 **Modes (§11)** — VS (stock / time / stamina), team battles with friendly-fire toggle,
 4-player free-for-all, Classic Mode (5-stage gauntlet with boss), Break the Targets,
@@ -143,8 +165,8 @@ python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
 The engine runs headless in node — no browser, no canvas (also from the project root):
 
 ```bash
-node tools/animtest.js      # animation states, frame data, hitbox geometry  (22)
-node tools/simtest.js       # physics, stage collision, facing, state machine (16)
+node tools/animtest.js      # animation states, frame data, hitbox geometry  (27)
+node tools/simtest.js       # physics, collision, state machine, 4-player   (30)
 node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
 node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
 ```

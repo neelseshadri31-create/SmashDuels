@@ -181,7 +181,7 @@ class Item {
     this.type = type; this.def = ITEMS[type]; this.match = match;
     this.x = x; this.y = y; this.vx = rand(-2, 2); this.vy = -3;
     this.rot = 0; this.vr = rand(-0.1, 0.1);
-    this.life = 900; this.onGround = false; this.heldBy = null;
+    this.life = 900; this.onGround = false; this.onPlatform = null; this.heldBy = null;
     this.hp = this.def.hp || 0;
     this.w = 26; this.h = 26;
     this.bobT = rand(100);
@@ -204,18 +204,36 @@ class Item {
       this.vy = Math.min(this.vy + 0.45, 12);
       this.x += this.vx; this.y += this.vy;
       this.rot += this.vr;
-      // land on platform/ground
-      if (this.y >= gd.y - 8 && this.x > gd.x && this.x < gd.x + gd.w) { this.y = gd.y - 8; this.onGround = true; this.vx *= 0.4; this.vy = 0; }
+      // land on platform/ground — the deck uses the same lip the fighters do, so
+      // an item can come to rest beside the stage instead of tunnelling past it
+      if (this.y >= gd.y - 8 && this.x > gd.x - DECK_LIP && this.x < gd.x + gd.w + DECK_LIP) {
+        this.y = gd.y - 8; this.onGround = true; this.onPlatform = null; this.vx *= 0.4; this.vy = 0;
+      }
       for (const p of match.stage.platforms) {
         const px = p.cx !== undefined ? p.cx : p.x, py = p.cy !== undefined ? p.cy : p.y;
-        if (this.vy > 0 && this.x > px && this.x < px + p.w && this.y > py - 6 && this.y < py + 20) { this.y = py - 8; this.onGround = true; this.vy = 0; }
+        if (this.vy > 0 && this.x > px && this.x < px + p.w && this.y > py - 6 && this.y < py + 20) {
+          this.y = py - 8; this.onGround = true; this.onPlatform = p; this.vy = 0;
+        }
       }
       if (this.y > WORLD.blast.bottom) { this.dead = true; }
     } else {
+      /* An item at rest has to keep checking what is under it.  It used to be
+         told once that it had landed and never asked again, so a bob-omb that came
+         down on the Ember Foundry lift hung in mid-air for its whole life — and on
+         the way out of the pillar stage, sat on nothing at all. */
+      const p = this.onPlatform;
+      if (p) {
+        this.x += p.dx || 0; this.y += p.dy || 0;
+        const px = p.cx !== undefined ? p.cx : p.x, py = p.cy !== undefined ? p.cy : p.y;
+        if (!(this.x > px && this.x < px + p.w) || Math.abs(this.y - (py - 8)) > 14) {
+          this.onGround = false; this.onPlatform = null; this.vy = Math.max(this.vy, 0.4);
+        }
+      } else if (!(this.x > gd.x - DECK_LIP && this.x < gd.x + gd.w + DECK_LIP) || Math.abs(this.y - (gd.y - 8)) > 14) {
+        this.onGround = false; this.onPlatform = null; this.vy = Math.max(this.vy, 0.4);
+      }
       this.vx *= 0.9;
       this.x += this.vx;
       this.rot += this.vr * 0.4;
-      if (this.x < gd.x || this.x > gd.x + gd.w) { this.onGround = false; }
     }
     if (this.life < 180 && Math.floor(this.life / 6) % 2 === 0) { /* blink out */ }
     if (this.life <= 0) this.dead = true;

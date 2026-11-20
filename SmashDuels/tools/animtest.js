@@ -17,7 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { boot, cast, control, newMatch, makeRunner, GAME } = require('./harness');
+const { boot, cast, control, newMatch, makeRunner, makeCtx, GAME } = require('./harness');
 
 const T = makeRunner();
 const { test, assert, near } = T;
@@ -804,6 +804,124 @@ test('match: 20s of CPU duelling with the new frame data stays sane', async () =
   assert(m.frame > 1150, 'the match stopped ticking');
   assert(m.fighters.some((f) => f.damage > 0 || f.stats.kos > 0), '20 seconds and nobody got hit — hitboxes regressed');
   console.log(`        (${starts} attack starts, ${turns} turn ticks, ${dashes} dash ticks over 1200 frames x 4 fighters)`);
+});
+
+/* =================== smoothness: the panel is not the simulation ===================
+   Playtest report: "animations feel laggy when running — make them more fluid".
+   The frame data was not the whole story: physics is locked to 60 Hz while rAF runs
+   at the panel rate, so on a 120 Hz laptop or phone every other displayed frame
+   re-drew the same tick.  Half the frames you were shown carried no new information,
+   which is exactly what "laggy" feels like at any frame rate you can name.
+
+   The renderer owns the fix (Sprites.beginFrame → a sub-tick lead on positions plus
+   setBlend on the pose clock), so these tests replicate Game.loop's accumulator and
+   then read the blit list the recording canvas was handed — the real draw output in
+   world space, not a re-implementation of it. */
+const STEP_MS = 1000 / 60;
+
+/* Draw `frames` rAF frames at `hz` against a real ticking match.  Returns the x/y
+   the canvas was asked to blit at, and the tile index each frame showed. */
+function painted(h, opts) {
+  const m = newMatch(h.ctx, cast(2, [opts.key || 'valor', 'grim']), opts.stage || 'skyshrine', { state: 'play' });
+  const S = h.g.Sprites;
+  const rec = { ops: [], stack: [] };
+  const ctx = makeCtx(rec);
+  const me = m.fighters[0];
+  me.x = opts.x === undefined ? 60 : opts.x;
+  me.vx = 0;
+  const ctl = control(m, (f) => (f === me ? (opts.input ? opts.input(m.frame, f) : { right: true }) : {}));
+  const dt = 1000 / opts.hz;
+  let acc = 0, clock = 0;
+  const xs = [], ys = [], tiles = [];
+  for (let fr = 0; fr < opts.frames; fr++) {
+    acc += dt;
+    let steps = 0;
+    while (acc >= STEP_MS && steps < 4) {
+      if (opts.runArmed) me.runArmed = true;              // a held direction is a walk; a tap arms the run
+      ctl.tick(1);
+      acc -= STEP_MS; steps++;
+    }
+    const alpha = opts.blend ? Math.min(1, acc / STEP_MS) : 0;
+    const undo = S.beginFrame(m, alpha);
+    rec.ops.length = 0;
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    S.drawSpriteFighter(ctx, me, clock);
+    const sel = S.pickAnim(me, clock);
+    if (undo) undo();
+    const o = rec.ops.find((x) => x.op === 'drawImage' && x.finite);
+    if (!o) throw new Error('the sprite pass drew nothing on frame ' + fr + ' (state=' + me.state + ')');
+    xs.push(o.matrix[4]); ys.push(o.matrix[5]); tiles.push(sel ? sel.i : -1);
+    clock += dt;
+  }
+  return { xs, ys, tiles, m, me };
+}
+
+const stutter = (xs) => {
+  let repeats = 0, rev = 0, revMax = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const d = xs[i] - xs[i - 1];
+    if (d === 0) repeats++;
+    else if (d < 0) { rev++; revMax = Math.max(revMax, -d); }
+  }
+  return { repeats, rev, revMax };
+};
+
+test('smooth: a 120 Hz panel gets a new position on nearly every frame', async () => {
+  const h = await roster();
+  const r = painted(h, { hz: 120, blend: true, frames: 240, runArmed: true });
+  const st = stutter(r.xs);
+  assert(st.repeats <= 14, `${st.repeats} of 240 frames re-drew the same position`);
+  assert(st.rev <= 6, `${st.rev} frames moved the sprite backwards (max ${st.revMax.toFixed(2)}px)`);
+  assert(st.revMax <= 0.8, `a frame moved the sprite ${st.revMax.toFixed(2)}px backwards`);
+});
+
+test('smooth: the same run without the blend is the bug being fixed', async () => {
+  const h = await roster();
+  const st = stutter(painted(h, { hz: 120, blend: false, frames: 240, runArmed: true }).xs);
+  assert(st.repeats > 90, `expected the 60 Hz sim to double every frame on a 120 Hz panel, got ${st.repeats}`);
+});
+
+test('smooth: a 60 Hz panel draws the tick, untouched', async () => {
+  const h = await roster();
+  const a = painted(h, { hz: 60, blend: false, frames: 180, runArmed: true });
+  const b = painted(h, { hz: 60, blend: true, frames: 180, runArmed: true });
+  // identical sequences: the blend costs a normal monitor nothing, and adds no latency
+  assert(a.xs.length === b.xs.length && a.xs.every((v, i) => Math.abs(v - b.xs[i]) < 1e-6),
+    'the blend moved a 60 Hz frame — the smoothing is not a no-op at the sim rate');
+});
+
+test('smooth: the pose clock keeps its own rate at 120 Hz', async () => {
+  const h = await roster();
+  const r = painted(h, { hz: 120, blend: true, frames: 240, runArmed: true });
+  let flips = 0, prev = r.tiles[0];
+  for (let i = 0; i < r.tiles.length; i++) {
+    if (r.tiles[i] !== prev) { flips++; prev = r.tiles[i]; }
+  }
+  const at = r.m.frame;
+  assert(flips > 20 && flips < at, `${flips} pose changes over ${at} simulation ticks — the run cycle is not advancing with the ground`);
+  assert(new Set(r.tiles).size >= 6, `only ${new Set(r.tiles).size} of the run row's tiles were shown`);
+});
+
+test('smooth: hitlag and a blocked body are never predicted past', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  // 1. a fighter in hitlag is frozen: beginFrame must not move it a pixel
+  f.x = 120; f.vx = 12; f.vy = -6; f.hitlag = 6;
+  const undoA = S.beginFrame(m, 0.5);
+  const moved = f.x !== 120 ? f.x : null;
+  if (undoA) undoA();
+  assert(moved === null, `a fighter in hitlag was drawn at x=${moved}`);
+  // 2. a fighter pressed into the stage edge has velocity but no travel: no lead
+  f.hitlag = 0; f.onGround = true;
+  const gd = m.stage.ground;
+  f.x = gd.x - 14; f.y = gd.y; f.vx = -4; f.vy = 0; f.state = 'idle';
+  const x0 = f.x;
+  S.beginFrame(m, 0.5);            // no undo: read the position mid-draw
+  const lead = f.x - x0;
+  assert(lead <= 0.001, `a body pinned at the wall was drawn ${lead.toFixed(2)}px past where the sim put it`);
 });
 
 /* ---------------- entry ---------------- */

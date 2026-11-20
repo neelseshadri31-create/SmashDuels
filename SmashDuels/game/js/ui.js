@@ -451,6 +451,7 @@ const UI = (() => {
 const Game = (() => {
   let canvas, ctx, match = null, raf = null, last = 0, acc = 0;
   const STEP = 1000 / 60;
+  let frameDt = STEP;                 // smoothed rAF period: the panel-rate estimate
   let cameraIntro = 0;
 
   function init(cv) {
@@ -477,7 +478,7 @@ const Game = (() => {
     AUDIO.init(); AUDIO.resume();
     if (SAVE.data.settings.music) AUDIO.startMusic();
     if (raf) cancelAnimationFrame(raf);
-    last = performance.now(); acc = 0;
+    last = performance.now(); acc = 0; frameDt = STEP;
     raf = requestAnimationFrame(loop);
   }
   function restart() {
@@ -548,6 +549,7 @@ const Game = (() => {
   function loop(now) {
     raf = requestAnimationFrame(loop);
     const dt = Math.min(now - last, 100); last = now;
+    if (dt > 0 && dt < 40) frameDt += (dt - frameDt) * 0.1;
     // fixed timestep 60fps
     acc += dt;
     let steps = 0;
@@ -559,17 +561,27 @@ const Game = (() => {
       }
       acc -= STEP; steps++;
     }
-    if (match) render();
+    /* What fraction of a tick is still outstanding, handed to the draw pass so it
+       can land between two physics frames (see Sprites.beginFrame).  Only asked for when the
+       panel is outpacing the simulation: at 60 Hz the leftover is what a step was
+       going to do anyway, and holding the blend off there keeps the drawn frame
+       exactly the tick the engine produced — no added input latency on a normal
+       monitor. */
+    const alpha = frameDt < STEP * 1.3 ? Math.min(1, acc / STEP) : 0;
+    if (match) render(alpha);
     updateHUD();
   }
 
-  function render() {
+  function render(alpha) {
     const W = match.W, H = match.H;
     const dpr = canvas.width / W;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const cam = match.cam;
     cam.W = W; cam.H = H;
+    // render-rate smoothing; see Sprites.beginFrame (skipped while paused, where
+    // a frozen fighter has velocity but no motion to interpolate)
+    const unblend = Sprites.beginFrame ? Sprites.beginFrame(match, match.paused ? 0 : (alpha || 0)) : null;
 
     // background (screen space parallax)
     ctx.save();
@@ -713,6 +725,7 @@ const Game = (() => {
     match.fx.draw(ctx, cam);
 
     ctx.restore();
+    if (unblend) unblend();          // sim state is exactly what the last tick left it
 
     // screen-space overlays
     ctx.save();

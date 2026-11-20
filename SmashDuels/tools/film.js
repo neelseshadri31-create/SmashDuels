@@ -40,6 +40,13 @@ const words = argv.filter((a) => !a.startsWith('--'));
 const flag = (k, d) => { const a = flags.find((x) => x.startsWith('--' + k + '=')); return a ? Number(a.split('=')[1]) : d; };
 const TICKS = flag('ticks', 26);
 const CELL = [flag('cellw', 150), flag('cellh', 138)];
+/* --hz=120 films the *drawn* frames, not the ticks: the panel runs faster than the
+   60 Hz simulation, and whether a frame is a repeat of the one before it is the
+   whole smoothness question.  --blend=0 turns Sprites.beginFrame off so you can
+   watch the difference. */
+const HZ = flag('hz', 60);
+const SUBS = HZ > 60 ? Math.max(1, Math.round(HZ / 60)) : 1;
+const BLEND = flag('blend', 1) ? 1 : 0;
 
 /* ---------------- the scenes ----------------
    `warm` ticks establish a state (a run, a fall) before the film starts, `setup`
@@ -113,23 +120,25 @@ function scene(h, name, spec, key) {
 
   const frames = [];
   const n = spec.ticks || TICKS;
-  for (let i = 0; i < n; i++) {
-    feed(i, spec.input || (() => ({})));
-    /* onTick runs before the sim so a forced flag is part of this tick's input
-       state, not a change made after the frame was already chosen */
-    if (spec.onTick) { m.fighters.forEach((f, k) => { if (k === 0) spec.onTick(i, f, foe, m); }); }
-    m.update();
+
+  /* One drawn frame.  `alpha` is the fraction of the *next* tick this frame is
+     rendered at, exactly as Game.loop computes it from the fixed-step leftover;
+     0 means "draw the tick", which is what a 60 Hz panel gets. */
+  const oneFrame = (alpha, clock) => {
+    const undo = S.beginFrame ? S.beginFrame(m, alpha) : null;
     rec.ops.length = 0;
     /* the harness canvas starts at a borrowed alpha; the real render pass draws
        fighters opaque, so match that before recording (a fighter's own blink sets
        its alpha inside, and that we do want to capture) */
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
-    const drew = S.drawSpriteFighter(ctx, me, i * 16.7);
+    const drew = S.drawSpriteFighter(ctx, me, clock);
     const sel = S.pickAnim(me, 0);
+    if (undo) undo();
     const hurt = me.hurtbox;
     frames.push({
-      drew: !!drew, x: Math.round(me.x * 100) / 100, y: Math.round(me.y * 100) / 100,
+      drew: !!drew, sub: Math.round(alpha * 100) / 100,
+      x: Math.round(me.x * 100) / 100, y: Math.round(me.y * 100) / 100,
       state: me.state, anim: sel ? `${sel.name}:${sel.i}` : null,
       vfx: sel && sel.vfx !== undefined ? Math.round(sel.vfx * 100) / 100 : 1,
       swing: sel && sel.swing ? Math.round(sel.swing.dx * 10) / 10 : 0,
@@ -145,6 +154,16 @@ function scene(h, name, spec, key) {
       hit: (me.activeBoxes ? me.activeBoxes() : []).map((o) => o.box),
       hurt: hurt ? [hurt.x - me.x, hurt.y - me.y, hurt.w, hurt.h] : null,
     });
+  };
+
+  for (let i = 0; i < n; i++) {
+    feed(i, spec.input || (() => ({})));
+    /* onTick runs before the sim so a forced flag is part of this tick's input
+       state, not a change made after the frame was already chosen */
+    if (spec.onTick) { m.fighters.forEach((f, k) => { if (k === 0) spec.onTick(i, f, foe, m); }); }
+    m.update();
+    if (SUBS <= 1) oneFrame(0, i * 16.7);
+    else for (let q = 0; q < SUBS; q++) oneFrame(BLEND ? q / SUBS : 0, (i + q / SUBS) * 16.7);
   }
   return { name, frames };
 }
@@ -173,7 +192,7 @@ function scene(h, name, spec, key) {
       scenes,
     }));
     const empty = scenes.filter((s) => s.frames.some((f) => !f.drew)).map((s) => s.name);
-    console.log(`  ${key}: ${scenes.length} rows, ${scenes[0].frames.length} ticks each` +
+    console.log(`  ${key}: ${scenes.length} rows, ${scenes[0].frames.length} ${(HZ > 60 ? HZ + ' Hz drawn frames' : 'ticks')} each` +
       (empty.length ? `   (rows with an unpainted frame: ${empty.join(' ')})` : ''));
   }
   console.log(`\n${keys.length ? keys.length : KEYS.length} spec(s), ${total} frames -> ${path.relative(path.join(__dirname, '..'), OUT)}/`);

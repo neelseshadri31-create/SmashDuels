@@ -154,6 +154,231 @@ test('sides: a fighter shoved past the side blast zone is KO’d', () => {
   assert(ko, 'fighter shoved off the side was never KO’d');
 });
 
+/* =================== vs-4: the sides of the stage ===================
+   Playtest report: "in 4-player a character gets stuck on the sides".  Two things
+   made that happen and both are cheap to prove: the crowd solver could not resolve
+   a pile at a stage edge (its push and Fighter.confine undid each other), and a
+   fighter shoved a few px past the deck face was caught by a ledge-hang whose only
+   exit was a button press. */
+function packAtWall(m, side) {
+  const gd = m.stage.ground;
+  const wall = side < 0 ? gd.x : gd.x + gd.w;
+  m.fighters.forEach((f, i) => {
+    f.x = wall - side * (30 + i * 12); f.y = gd.y; f.vx = 0; f.vy = 0;   // packed just inside the face
+    f.onGround = true; f.onPlatform = null; f.state = 'idle'; f.onGround = true;
+    f.hitstun = 0; f.hitlag = 0; f.shieldHP = 0; f.grabbedBy = null; f.held = null;
+    f.invincT = 0; f.spawnProtect = 0; f.ledge = null; f.ledgeCD = 0; f.ledgeInvuln = 0;
+    f.facing = -side; f.facing = side < 0 ? 1 : -1;
+  });
+  return wall;
+}
+const deepOverlap = (m) => {
+  let worst = 0;
+  for (let a = 0; a < m.fighters.length; a++) for (let b = a + 1; b < m.fighters.length; b++) {
+    const A = m.fighters[a], B = m.fighters[b];
+    if (A.eliminated || B.eliminated) continue;
+    if (Math.abs(A.y - B.y) > 44 * (A.scale + B.scale)) continue;
+    worst = Math.max(worst, 26 * (A.scale + B.scale) + 8 - Math.abs(B.x - A.x));
+  }
+  return worst;
+};
+
+test('sides: a packed 4-player pile at the wall unwinds and walks nobody off the deck', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'vesper', 'rook']), 'skyshrine');
+  const gd = m.stage.ground;
+  packAtWall(m, -1);
+  const c = control(m, () => ({}));                      // nobody presses anything
+  let deepRun = 0, worstRun = 0, ledge = 0;
+  for (let i = 0; i < 240; i++) {
+    c.tick(1);
+    deepRun = deepOverlap(m) > 30 ? deepRun + 1 : 0;
+    worstRun = Math.max(worstRun, deepRun);
+    for (const f of m.fighters) {
+      if (f.state === 'ledge') ledge++;
+      assert(f.x > gd.x - 20, `a fighter was shoved off the deck by the pile: x=${f.x.toFixed(1)}`);
+      assert(!f.eliminated, 'a fighter was KO’d by their own pile');
+    }
+  }
+  assert(worstRun < 24, `the pile stayed welded together for ${worstRun} frames at the wall`);
+  assert(ledge === 0, `${ledge} frames of ledge-hangs from a crowd that never left the ground`);
+});
+
+test('sides: holding into the wall cannot park you in a ledge-hang', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'vesper', 'rook']), 'skyshrine');
+  packAtWall(m, -1);
+  const me = m.fighters[0];
+  const c = control(m, (f, k) => (k === 0 ? { left: true } : {}));   // P1 presses into the wall
+  let hang = 0, worst = 0;
+  for (let i = 0; i < 240; i++) {
+    c.tick(1);
+    hang = me.state === 'ledge' ? hang + 1 : 0;
+    worst = Math.max(worst, hang);
+  }
+  assert(worst <= 96, `a ledge-hang lasted ${worst} frames (1.6s of not being in the fight)`);
+});
+
+test('ledge: a hang nobody presses a button for still ends', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['astra']), 'skyshrine');
+  const gd = m.stage.ground;
+  const f = m.fighters[0];
+  f.x = gd.x - 12; f.y = gd.y + 18; f.vx = 0; f.vy = 2; f.onGround = false;
+  f.state = 'fall'; f.hitstun = 0; f.ledgeCD = 0;
+  m.readPlayerInput = () => ({});
+  let hang = 0;
+  for (let i = 0; i < 160; i++) {
+    m.update();
+    if (f.state === 'ledge') hang++;
+  }
+  assert(hang > 4, 'the fighter never even caught the ledge — the grab test is broken');
+  assert(hang < 100, `the hang lasted ${hang} frames; a hang with no input must auto-get-up`);
+  assert(f.onGround && f.x > gd.x + 8, `the get-up left them off-stage (x=${f.x.toFixed(0)} onGround=${f.onGround})`);
+});
+
+test('ledge: a fighter standing over solid deck is never caught by one', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['rook']), 'skyshrine');
+  const gd = m.stage.ground;
+  const f = m.fighters[0];
+  // parked just inside the face, airborne for a moment (a hop off the deck)
+  f.x = gd.x + 6; f.y = gd.y - 6; f.vx = 0; f.vy = 1; f.onGround = false; f.state = 'fall';
+  f.ledgeCD = 0;
+  m.readPlayerInput = () => ({});
+  for (let i = 0; i < 12; i++) {
+    f.x = gd.x + 6; f.y = gd.y - 6 - i; f.onGround = false; f.state = 'fall';
+    m.update();
+    assert(f.state !== 'ledge', 'a fighter over the deck was snapped into a ledge-hang');
+  }
+});
+
+/* =================== platforms: standing on a block ===================
+   Playtest report: "collision problems with the blocks and things".  Movers were
+   integrated but their travel was never handed to whatever was riding them. */
+test('platforms: a fighter rides the Ember Foundry lift', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'foundry');
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'x');
+  assert(p, 'the foundry lift is gone from the stage data');
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  let slipped = 0, fell = 0;
+  for (let i = 0; i < 260; i++) {
+    const py = p.cy !== undefined ? p.cy : p.y;
+    if (!f.onPlatform || Math.abs(f.y - py) > 4) {
+      f.x = p.cx + p.w / 2; f.y = py; f.vx = 0; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'idle';
+    }
+    m.update();
+    const cx = p.cx + p.w / 2;
+    if (Math.abs(f.x - cx) > 2.5) slipped = Math.max(slipped, Math.abs(f.x - cx));
+    if (!f.onPlatform) fell++;
+  }
+  assert(slipped < 4, `the lift slid ${slipped.toFixed(1)}px out from under the fighter`);
+  assert(fell <= 2, `the fighter left the lift ${fell} times while standing still on it`);
+});
+
+test('platforms: a rising block does not bounce a standing fighter', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['vesper']), 'cometreach');
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'y');
+  assert(p, 'cometreach has no vertical mover');
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  f.x = p.cx + p.w / 2; f.y = p.cy; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'idle';
+  let maxJump = 0, off = 0;
+  for (let i = 0; i < 260; i++) {
+    const py0 = f.y;
+    m.update();
+    maxJump = Math.max(maxJump, Math.abs(f.y - py0));
+    off = Math.max(off, Math.abs(f.y - p.cy));
+    if (!f.onGround) off += 0;                            // counted below via maxJump
+  }
+  assert(maxJump < Math.abs(2 * (p.move.amp * p.move.speed)) + 2.2,
+    `the block yanked the fighter ${maxJump.toFixed(2)}px in one frame`);
+  assert(off < 3, `the fighter came ${off.toFixed(2)}px off the block's surface`);
+});
+
+test('platforms: dropping through a block never drops you through the floor', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['grim']), 'skyshrine');
+  const gd = m.stage.ground;
+  const p = m.stage.platforms[0];
+  const f = m.fighters[0];
+  f.x = p.x + p.w / 2; f.y = p.y; f.vx = 0; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'crouch';
+  m.readPlayerInput = (fr) => (fr.__raw || {});
+  f.__raw = { down: true };
+  m.update();                                             // the crouch sets up the drop
+  f.__raw = { down: true, jump: true };
+  let below = false, landed = -1;
+  for (let i = 0; i < 120 && landed < 0; i++) {
+    f.__raw = {};
+    m.update();
+    if (f.y > gd.y + gd.h) below = true;
+    if (f.onGround && f.y >= gd.y - 1) landed = i;
+  }
+  assert(!below, 'the fighter fell out through the stage deck');
+  assert(landed >= 0, `never came back down onto the deck (y=${f.y.toFixed(0)} state=${f.state})`);
+});
+
+test('items: an item on a moving lift rides it, then falls when the lift leaves', () => {
+  const { ctx, g } = run();
+  const m = newMatch(ctx, cast(1, ['astra']), 'foundry', { rules: { items: 'off' } });
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'x');
+  const gd = m.stage.ground;
+  const it = m.spawnItem('bobomb', p.cx + p.w / 2, p.cy - 200);
+  assert(it, 'spawnItem returned nothing');
+  m.readPlayerInput = () => ({});
+  let hung = 0, supported = true, tracked = 0;
+  for (let i = 0; i < 300; i++) {
+    m.update();
+    if (it.dead) break;
+    const overPlat = it.x > p.x && it.x < p.x + p.w;
+    const overDeck = it.x > gd.x - 20 && it.x < gd.x + gd.w + 20;
+    if (it.onGround && !overPlat && !overDeck) hung++;
+    if (it.onGround && overPlat && Math.abs(it.y - (p.cy - 8)) > 6) hung++;
+    tracked = Math.max(tracked, Math.abs(it.x - (p.cx + p.w / 2)));
+    supported = !it.onGround || overPlat || overDeck;
+  }
+  assert(hung === 0, `an item rested on nothing for ${hung} frames`);
+  assert(supported, 'the item ended up floating off any surface');
+});
+
+test('hazards: the bamboo pillar hits once per rise, not once per frame', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['rook']), 'hollow', { rules: { hazards: true } });
+  const gd = m.stage.ground, hz = m.stage.hazard;
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  for (let i = 0; i < hz.period; i++) {                              // exactly one rise
+    f.x = hz.x; f.y = gd.y; f.vx = 0; f.vy = 0; f.onGround = true; f.state = 'idle';
+    f.hitstun = 0; f.hitlag = 0; f.shieldHP = 60;         // parked in the beam, shield up
+    m.update();
+  }
+  assert(!f.eliminated, 'standing in the pillar KO’d the fighter');
+  assert(f.damage <= hz.dmg * 1.5,
+    `the pillar did ${f.damage.toFixed(0)}% to a fighter standing in it for one rise (dmg ${hz.dmg})`);
+});
+
+test('hazards: lava burns on a rhythm, not every frame', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'foundry', { rules: { hazards: true } });
+  const hz = m.stage.hazard;
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  f.y = hz.y + 8; f.vy = 0; f.x = 0; f.onGround = false;
+  let hits = 0, prev = 0;
+  for (let i = 0; i < 120; i++) {
+    f.y = hz.y + 8; f.vy = 0; f.hitstun = 0; f.state = 'fall';
+    m.update();
+    if (f.damage > prev) hits++;
+    prev = f.damage;
+    if (f.eliminated || f.stocks < 3) break;
+  }
+  assert(hits > 0, 'the lava never burned anybody');
+  assert(hits <= 4, `the lava hit ${hits} times in 120 frames — that is a shredder, not a hazard`);
+});
+
 /* =================== facing =================== */
 test('facing: a back-roll keeps the fighter turned toward the opponent', () => {
   const { ctx } = run();
@@ -344,6 +569,145 @@ test('stress: random mashers never produce NaN or a stuck overlap', () => {
     stuckFrames = anyOverlap ? stuckFrames + 1 : 0;
     assert(stuckFrames < 45, `fighters pinned on top of each other for ${stuckFrames} frames`);
   }
+});
+
+/* A 4-player CPU match is the stress case the playtesters reported as \"stuck at
+   the sides / collisions with things\": twice the bodies to separate, twice the
+   items, twice the projectiles.  Everything below is deterministic — Math.random
+   is replaced by a seeded LCG for the whole match — because a stress test that
+   only fails 1 run in 8 is a test people learn to ignore. */
+function seededRandom(seed) {
+  let s = seed >>> 0;
+  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+}
+
+const VS4_SEEDS = [['skyshrine', 4242], ['foundry', 1337], ['terminal', 555]];
+
+test('vs4: a 4-player CPU match never locks up, stalls or parks a fighter', () => {
+  const realRandom = Math.random;
+  try {
+    for (const [stage, seed] of VS4_SEEDS) {
+      Math.random = seededRandom(seed);
+      console.log(`      ${stage} / seed ${seed}`);
+      vs4Match(stage);
+    }
+  } finally { Math.random = realRandom; }
+});
+
+function vs4Match(stage) {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'astra', 'rook'], { cpu: true }), stage, { state: 'play' });
+  const gd = m.stage.ground;
+  const TICKS = 2400;                                     // 40 seconds of play
+  const PARKED = ['helpless', 'respawn', 'ko', 'final', 'stun'];   // long by design
+  const runs = m.fighters.map((f) => ({ key: f.key, state: null, n: 0, worst: 0, worstState: '', stale: 0, worstStale: 0, hang: 0, worstHang: 0 }));
+  const hitsAt = m.fighters.map(() => []);
+  const origHit = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { const k = m.fighters.indexOf(tgt); if (k >= 0) hitsAt[k].push(m.frame); return origHit(atk, tgt, o); };
+  let nan = 0, slab = 0, lock = 0, worstLock = 0;
+  for (let i = 0; i < TICKS; i++) {
+    m.update();
+    /* A hitlag lock is the signature of the juggle loop: both fighters are frozen
+       by hitlag, the attacker's action timer never advances past the active window,
+       and the next tick re-arms the hit.  Nothing recovers from it on its own. */
+    lock = m.fighters.some((a) => a.hitlag > 0 && !a.eliminated &&
+      m.fighters.some((b) => b !== a && !b.eliminated && Math.abs(a.x - b.x) < 90 && Math.abs(a.y - b.y) < 90)) ? lock + 1 : 0;
+    worstLock = Math.max(worstLock, lock);
+    m.fighters.forEach((f, k) => {
+      if (!Number.isFinite(f.x) || !Number.isFinite(f.y)) nan++;
+      if (f.y > gd.y + 6 && f.y < gd.y + gd.h + 8 && f.x > gd.x + 6 && f.x < gd.x + gd.w - 6) slab++;
+      const r = runs[k];
+      if (m.state !== 'play') { r.state = null; r.n = 0; r.hang = 0; return; }   // the KO pause freezes everybody
+      if (f.state === r.state) r.n++; else { r.state = f.state; r.n = 1; }
+      if (!PARKED.includes(f.state) && r.n > r.worst) { r.worst = r.n; r.worstState = f.state; r.worstAt = i; }
+      /* a fighter with no hitstun left must not stay in a hit state: that is the
+         "lying on the floor forever" report, and it also keeps the air drag on, so
+         the body slides at a third of a pixel a tick */
+      r.stale = ((f.state === 'hitstun' || f.state === 'launch') && f.hitstun <= 0) ? r.stale + 1 : 0;
+      r.worstStale = Math.max(r.worstStale, r.stale);
+      r.hang = f.state === 'ledge' ? r.hang + 1 : 0;
+      r.worstHang = Math.max(r.worstHang, r.hang);
+    });
+  }
+  assert(!nan, `${nan} non-finite positions`);
+  assert(!slab, `${slab} frames with a fighter inside the stage slab`);
+  assert(worstLock <= 30, `hitlag lock of ${worstLock} frames — a juggle loop`);
+  /* Every hit has to come out of an action that can end: at most a handful of hits
+     per second on one victim, however many CPUs are crowding it. */
+  let burst = 0;
+  for (const arr of hitsAt) {
+    for (let i = 0; i < arr.length; i++) { let j = i; while (j < arr.length && arr[j] - arr[i] < 60) j++; burst = Math.max(burst, j - i); }
+  }
+  assert(burst <= 10, `${burst} hits on one fighter inside 60 frames`);
+  const stale = runs.reduce((a, r) => Math.max(a, r.worstStale), 0);
+  assert(stale <= 8, `a fighter sat in a hit state with no hitstun left for ${stale} frames`);
+  const hang = runs.reduce((a, r) => Math.max(a, r.worstHang || 0), 0);
+  assert(hang < 100, `a ledge-hang lasted ${hang} frames — the auto-get-up is not firing`);
+  const worst = runs.reduce((a, r) => Math.max(a, r.worst), 0);
+  const who = runs.find((r) => r.worst === worst);
+  assert(worst < 400, `${who.key} sat in ${who.worstState} for ${worst} frames from frame ${who.worstAt}`);
+  const kos = m.fighters.reduce((a, f) => a + f.stats.kos, 0);
+  const dealt = m.fighters.reduce((a, f) => a + f.stats.dealt, 0);
+  console.log(`        worst state run ${worst}f (${who.worstState}); hits ${hitsAt.reduce((a, x) => a + x.length, 0)}, burst ${burst}/60f, ledge ${hang}f, kos ${kos}, damage dealt ${dealt.toFixed(0)}`);
+  assert(kos > 0 || dealt > 60, `40 seconds of four CPUs and nothing happened (${kos} kos, ${dealt.toFixed(0)}% dealt)`);
+}
+
+/* The three regressions that test was hunting, pinned individually. */
+test('vs4: a swing of a held item is one hit, not one hit per frame', () => {
+  const { ctx, g } = run();
+  const m = newMatch(ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  a.held = { def: g.ITEMS.beamsword, x: a.x, y: a.y, heldBy: a, ammo: 9 };
+  a.state = 'idle'; b.state = 'idle'; b.damage = 0; b.x = a.x + 30; b.vx = 0;
+  a.facing = 1;
+  let hits = 0;
+  const orig = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { hits++; return orig(atk, tgt, o); };
+  /* The CPU path calls Match.useHeld directly (ai.js useItemOrThrow); a player pays
+     24 frames of item action instead.  Before the cooldown existed, a CPU holding a
+     batter hit 60 times in 60 ticks for 660%. */
+  for (let i = 0; i < 60; i++) { m.useHeld(a); m.update(); }
+  assert(hits === 1, `${hits} hits from 60 frames of swinging — expected 1`);
+  assert(b.damage <= 12, `victim ended at ${b.damage}% from one swing`);
+});
+
+test('vs4: a multi-hit move lands its authored hits on one target, no more', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['vesper', 'grim']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  const move = a.def.moves.jab;
+  assert(1 + (move.multi || 0) === 2, 'expected Vesper\'s jab to be the two-hit test case');
+  a.state = 'idle'; b.state = 'idle';
+  b.x = a.x + 20; b.y = a.y; b.vx = b.vy = 0;
+  a.startAttack('jab', m);
+  let hits = 0;
+  const orig = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { if (atk === a) hits++; return orig(atk, tgt, o); };
+  for (let i = 0; i < move.frames + 12; i++) { b.x = a.x + 20; b.vx = b.vy = 0; m.update(); }
+  const authored = 1 + (move.multi || 0);
+  assert(hits === authored, `${a.key} jab hit ${hits}x, authored ${authored}x`);
+});
+test('vs4: a grab releases its victim even if the grabber never presses throw', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'vesper']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  a.state = 'idle'; b.state = 'idle'; b.grabbedBy = null; a.grabbing = null;
+  m.beginGrab(a, b);
+  assert(b.grabbedBy === a, 'beginGrab did not attach the victim');
+  let held = 0, stuck = 0;
+  for (let i = 0; i < 220; i++) {
+    a.input = { attack: true, attackP: i % 10 === 0 };      // pummel, never a throw input
+    b.input = {};
+    if (a.grabbing) held++;
+    if (b.grabbedBy) stuck++;
+    m.update();
+  }
+  /* 120 ticks is GRAB_HOLD_MAX; pummelling every 10 frames must not extend it, or
+     the victim has no way out and reads as a fighter that is stuck. */
+  assert(held > 100 && held <= 125, `the grab lasted ${held} frames, expected ~120`);
+  assert(stuck === held, `the victim stayed attached for ${stuck} of ${held} frames`);
+  assert(!a.grabbing && !b.grabbedBy, 'the pair never un-grabbed');
+  assert(b.state !== 'grabbed', `victim still in state ${b.state} after the throw`);
 });
 
 /* ---------------- entry ---------------- */

@@ -120,6 +120,16 @@ const Sprites = (() => {
   const STALL_PX = 0.45;          // px/tick below which a stride is not happening
   const TAU2 = Math.PI * 2;
 
+  /* Sub-tick render blend, handed in by the game loop (see ui.js loop → Sprites.beginFrame).
+     Physics is locked to 60 Hz while rAF runs at the panel rate, so on a 120 Hz
+     display two drawn frames share one tick.  `BLEND` is how far into the next
+     tick the frame being drawn sits; it moves the continuous parts of a pose —
+     the bob, the lean, the stride advance — and never the tile table a hitbox is
+     derived from, so the collision timing stays exactly as the sim wrote it.
+     Left at 0 the renderer draws the tick, which is what a 60 Hz monitor sees. */
+  let BLEND = 0;
+  function setBlend(a) { BLEND = a > 0 && a < 1 ? a : 0; }
+
   /* One clock per fighter, keyed on the row being played: switching rows restarts
      it, staying on a row advances it at most once per game tick.  Held in a
      WeakMap so nothing about it leaks into save data or the fighter's own state. */
@@ -129,7 +139,10 @@ const Sprites = (() => {
     if (!c) { c = { name: null, t: 0, p: 0, tick: -1 }; clocks.set(f, c); }
     const tick = f.animT | 0;
     if (c.name !== name) { c.name = name; c.t = 0; c.p = 0; c.tick = tick; return c; }
-    if (c.tick === tick) return c;                       // same tick, same frame
+    /* Same tick twice — the second draw of a tick on a panel faster than 60 Hz.
+       The pose is not re-advanced (that would double its rate); it is offset by the
+       blend, which is the whole point: the frame lands between the two ticks. */
+    if (c.tick === tick) return blended(f, spec, c);
     const d = tick - c.tick;
     c.tick = tick;
     if (d <= 0) { c.t = 0; c.p = 0; return c; }          // animT reset: respawn, land
@@ -147,7 +160,107 @@ const Sprites = (() => {
         c.p += d / ticks;
       }
     }
-    return c;
+    return blended(f, spec, c);
+  }
+
+  /* ---------------- sub-tick render blend ----------------
+   *
+   * The mirror half of setBlend: positions, not poses.  The simulation has already
+   * run to the top of the tick by the time the frame is drawn, and `alpha` says how
+   * much of the *next* tick the panel will wait for — so each moving thing is drawn
+   * where the tick it is on is heading, and the camera leads by the same fraction.
+   * Interpolating backwards instead (the usual fixed-step recipe) puts the drawn
+   * frame a tick behind and, because the frame right after a step has alpha 0, saw
+   * the sprite one frame forward, one frame back: 116 of 240 frames moved backwards
+   * on a 120 Hz panel, which is a far worse stutter than the duplicated frames it
+   * was meant to fix.
+   *
+   * LEAD_CAP keeps a prediction honest: a launched fighter carrying 18px a tick
+   * would otherwise be drawn a visible jump past where the engine will actually put
+   * it, and an impact is the last moment you want the sprite to lie about.  Run
+   * speeds (2.4-6px/tick) sit inside the cap, so the smoothing is exact where it
+   * matters.  A fighter in hitlag is frozen and skipped entirely.
+   *
+   * Returns the undo; the draw pass hands the positions straight back, so the
+   * simulation never sees a number the physics did not produce.  alpha = 0 — a 60
+   * Hz panel, where there is nothing between the ticks to guess — is a no-op. */
+  const LEAD_CAP = 4;
+  const MEMO = new WeakMap();     // entity -> velocity as of the tick it was last drawn on
+  function beginFrame(match, alpha) {
+    setBlend(alpha);
+    if (!(alpha > 0) || !match) return null;
+    const moved = [];
+    /* Predict on a steady body only.  The tick a fighter gets smashed, lands or
+       jumps, its velocity is brand new, and a lead taken from the last frame's
+       velocity draws them where that old velocity was going — up to a few px the
+       engine then takes back, one frame of visible stutter for every impact.  So:
+       if the velocity jumped, draw the tick exactly and start leading again once
+       the flight is steady. */
+    const note = (e) => {
+      const JUMP = 1.25;                                   // px/tick that counts as an impulse
+      const tick = e.animT | 0;
+      let m = MEMO.get(e);
+      if (!m) { m = { t: -1, bad: false, px: e.x, py: e.y }; MEMO.set(e, m); }
+      if (m.t !== tick) {
+        m.bad = m.vx !== undefined
+          && (Math.abs(e.vx - m.vx) > JUMP || Math.abs(e.vy - m.vy) > JUMP);
+        m.t = tick; m.vx = e.vx; m.vy = e.vy;
+        const ddx = e.x - m.px, ddy = e.y - m.py;
+        m.px = e.x; m.py = e.y; m.dx = ddx; m.dy = ddy;
+      }
+      return m;
+    };
+    const step = (e, vx, vy, predict) => {
+      if (!e || e.hitlag > 0) return;                     // a frozen fighter is not moving
+      if (!Number.isFinite(vx) || !Number.isFinite(vy) || (!vx && !vy)) return;
+      let k = alpha, mx = LEAD_CAP, my = LEAD_CAP;
+      if (predict) {
+        const m = note(e);
+        if (m.bad) return;                                 // impulse: the sim's own frame, unedited
+        /* Never lead by more than the body actually just travelled.  A fighter
+           being scrubbed to a stop, or pushed against a wall, still has velocity the
+           tick before it stops — and drawing that velocity forward is a promise the
+           next tick takes back, which is a hitch, not a smoothing. */
+        if (vx * m.dx < 0) m.dx = 0;
+        if (vy * m.dy < 0) m.dy = 0;
+        mx = Math.max(Math.abs(m.dx), 0.5); my = Math.max(Math.abs(m.dy), 0.5);
+      }
+      const dx = clamp(vx * k, -Math.min(mx, LEAD_CAP), Math.min(mx, LEAD_CAP));
+      const dy = clamp(vy * k, -Math.min(my, LEAD_CAP), Math.min(my, LEAD_CAP));
+      if (!dx && !dy) return;
+      moved.push(e, e.x, e.y);
+      e.x += dx; e.y += dy;
+    };
+    for (const f of match.fighters) step(f, f.vx, f.vy, true);
+    for (const it of match.items) if (!it.heldBy) step(it, it.vx, it.vy);
+    for (const pr of match.projectiles) step(pr, pr.vx, pr.vy);
+    for (const su of (match.summons || [])) step(su, su.vx || 0, su.vy || 0);
+    const cam = match.cam;
+    let c = null;
+    if (cam && Number.isFinite(cam.px)) {
+      c = [cam.x, cam.y, cam.zoom];
+      cam.x += (cam.x - cam.px) * alpha;
+      cam.y += (cam.y - cam.py) * alpha;
+      cam.zoom += (cam.zoom - cam.pz) * alpha;
+    }
+    return () => {
+      if (c) { cam.x = c[0]; cam.y = c[1]; cam.zoom = c[2]; }
+      for (let i = 0; i < moved.length; i += 3) { moved[i].x = moved[i + 1]; moved[i].y = moved[i + 2]; }
+      setBlend(0);
+    };
+  }
+
+  /* A looping row gets the fraction of the tick the frame is drawn at; anything
+     with a scripted end (once / fit / hold) is owned by the action's own tick
+     count, because that is what the hit window is measured in. */
+  function blended(f, spec, c) {
+    if (!BLEND || !c || spec.once || spec.fit || spec.hold) return c;
+    const o = { name: c.name, t: c.t + BLEND, p: c.p, tick: c.tick };
+    if (spec.stride) {
+      const px = Math.abs(f.vx || 0);
+      if (px > STALL_PX) o.p = c.p + BLEND / clamp(spec.stride / px, spec.min || 2, spec.max || 14);
+    }
+    return o;
   }
 
   /* Which tile a row should show: loop, hold, once, or fit an action's length. */
@@ -215,7 +328,7 @@ const Sprites = (() => {
      the tiles and the hitbox.  Rows that do have art to play get a fifth of it —
      enough to give the blow weight, not enough to fight the drawing. */
   function attackSwing(f, amp) {
-    const ph = attackPhase(f);
+    const ph = attackPhase(f, BLEND);
     const A = amp;
     /* `sx` is a squash-stretch on top of the pose: below 1 the figure is wound up
        narrow and tall, at 1.1 it is flung long and flat.  Cartoon smear, and the
@@ -255,18 +368,19 @@ const Sprites = (() => {
     return Math.max(0.26, 1 - 0.72 * eased(ph.p));
   }
 
-  function attackPhase(f) {
+  function attackPhase(f, extra = 0) {
     const a = f.action || {};
     const startup = Math.max(1, a.startup | 0 || 4);
     const active = Math.max(1, a.active | 0 || 3);
     const dur = Math.max(startup + active, a.dur | 0 || startup + active + 8);
-    const t = Math.max(0, f.actionT | 0);
+    const t = Math.max(0, (f.actionT | 0) + extra);   // `extra`: sub-tick render blend only
     if (f.charging) return { phase: 0, p: 1 };
     if (t < startup) return { phase: 0, p: t / startup };
     if (t < startup + active) return { phase: 1, p: (t - startup) / active };
     return { phase: 2, p: clamp((t - startup - active) / Math.max(1, dur - startup - active), 0, 1) };
   }
 
+  let atlasWarned = false;
   function load() {
     for (const k of KEYS) {
       fetch(`assets/atlas/${k}.json`)
@@ -294,7 +408,15 @@ const Sprites = (() => {
           img.onerror = () => { A[k] = null; };
           img.src = `assets/atlas/${k}.png`;
         })
-        .catch(() => { A[k] = null; });
+        .catch(() => {
+          A[k] = null;
+          if (!atlasWarned) {
+            atlasWarned = true;
+            console.warn('[rift] animation atlases did not load — drawing the vector fallback. '
+              + 'Open the game through a local server (python3 -m http.server), not file://, '
+              + 'where the browser will not fetch JSON.');
+          }
+        });
     }
   }
 
@@ -594,7 +716,7 @@ const Sprites = (() => {
       if (spec.pulse) wob = Math.sin(c.t * 0.085) * spec.pulse;
     }
     const prog = spec.stride ? c.p : c.t / Math.max(1, spec.step || DEFAULT_STEP);
-    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, swing,
+    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, clock: c.t, swing,
       vfx: phase ? vfxGate(f) : 1,
       phase: phase || undefined };
   }
@@ -1143,10 +1265,11 @@ const Sprites = (() => {
        with the fighter instead of drifting out of sync with it. */
     const moving = (f.state === 'walk' || f.state === 'run' || f.state === 'turn');
     const tk = f.animT | 0;                       // game ticks, never wall clock
+    const ft = sel.clock === undefined ? tk : sel.clock;   // fractional: glides between ticks
     const step = (sel.prog || 0) % 1;
-    const bob = f.state === 'idle' ? Math.sin(tk * 0.052 + f.id) * 0.7
+    const bob = f.state === 'idle' ? Math.sin(ft * 0.052 + f.id) * 0.7
       : f.state === 'turn' ? -0.7
-      : moving ? (0.5 - Math.abs(step - 0.5)) * -2.8 : 0;
+      : moving ? (0.5 - Math.abs(step - 0.5)) * -2.8 : 0;   // stride-synced, so already fractional
     const dashing = (f.dashT | 0) > 0;
     let lean = f.state === 'run' ? (dashing ? 0.14 : 0.05) : 0;
     if (f.state === 'turn') lean = -0.07;                     // leaning on the brakes
@@ -1261,7 +1384,7 @@ const Sprites = (() => {
 
   return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
     atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
-    STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
+    setBlend, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 
 /* ============================================================
