@@ -916,7 +916,16 @@ class Fighter {
     const dur = a.dur || 30;
     const ended = t >= dur;
     // resolve hitboxes
-    if (a.type === 'move') {
+    if (a.type === 'special' && a.hitboxes) {
+      /* A rush special used to be all theatre: the dash branch of `updateSpecial` grants
+         the speed, the travel budget, the invincibility and the speed lines, and the move
+         authored `damage/bkb/kbs/angle` that nothing ever read — so running into someone
+         with B thrust them forward and dealt 0%.  It goes through the same resolver as a
+         melee move now, which is the only reason a rush respects a shield, a counter, the
+         re-hit cap and stale the way everything else does. */
+      const n = a.active || 1;
+      if (t >= a.startup && t < a.startup + n) this.checkHit(match, 1, 'special' + a.specialKey);
+    } else if (a.type === 'move') {
       /* `t >= startup && t < startup + active` — `active` is the number of live
          frames, and the old `<= startup + active` made every move in the roster
          hit for one frame too long, with the extra tick landing after the
@@ -1028,14 +1037,19 @@ class Fighter {
           match.fx.speedLines(this);
         }
         if (sp.type === 'teleport' && t >= sp.startup && !s.tpFired) { s.tpFired = true;
+          const px = this.x;
           const nx = clamp(this.x + this.facing * sp.dist, WORLD.blast.left + 40, WORLD.blast.right - 40);
           match.fx.burst(this.x, this.y - 50, this.pal.accent, 18);
           this.x = nx;
           this.invincT = Math.max(this.invincT, 8);
           match.fx.burst(this.x, this.y - 50, this.pal.accent, 18);
           AUDIO.sfx('dodge');
-          // hit along path
-          match.aoeHit(this, this.x, this.y - 60, 70, sp.damage, sp.bkb, sp.kbs, sp.angle);
+          /* Hit along the path, not at the landing point.  A single blast at the exit
+             meant "Blink through foes" only ever hit whoever stood where Vesper arrived:
+             a foe at arm's length — the range you actually blink *through* — took nothing,
+             because the exit was 190px past them.  The segment is measured here rather than
+             by two `aoeHit` calls so a target in the middle of the blink is cut once. */
+          this.pathHit(match, px, nx, sp);
         }
         if (sp.type === 'lasso' && t >= sp.startup && !s.lassoFired) { s.lassoFired = true;
           match.spawnProjectile({ owner: this, x: this.x + this.facing * 26, y: this.y - 56, vx: this.facing * 14, damage: sp.damage, bkb: sp.bkb, kbs: sp.kbs, angle: sp.angle, life: 22, color: this.pal.accent, size: 9, kind: 'lasso', pull: 1 });
@@ -1127,8 +1141,24 @@ class Fighter {
     return out;
   }
 
+  /* `Match.aoeHit`, swept: the same radius measured against the nearest point of the
+     line the fighter blinked along, instead of against its end.  One pass over the
+     targets, so a fighter standing mid-path is cut once and not twice, and the same
+     guards everything else uses (team, elimination, invincibility, shield). */
+  pathHit(match, x0, x1, sp, radius = 70) {
+    const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
+    for (const t of match.fighters) {
+      if (t === this || t.eliminated || match.sameTeam(this, t)) continue;
+      if (t.invincible) continue;
+      const dx = t.x - clamp(t.x, lo, hi);
+      if (Math.hypot(dx, (t.y - 50) - (this.y - 50)) >= radius + 22) continue;
+      if (t.shieldHP > 0) { match.shieldHit(this, t, sp.damage, null); continue; }
+      match.hitFighter(this, t, { damage: sp.damage, bkb: sp.bkb, kbs: sp.kbs, angle: sp.angle });
+    }
+  }
+
   /* Resolve one tick of the active window against every eligible target. */
-  checkHit(match, mult = 1) {
+  checkHit(match, mult = 1, staleKey = null) {
     const a = this.action;
     const live = this.activeBoxes();
     if (!live.length) return;
@@ -1144,12 +1174,19 @@ class Fighter {
            window of a two-hit flurry never advances far enough to close, the rehit
            gap re-arms a tick later, and the two fighters juggle each other in place
            forever.  A CPU 4-player match spent 1232 frames (20 seconds, 40 hits)
-           locked exactly like that with nobody able to move. */
+           locked exactly like that with nobody able to move.
+
+           It is spent on a target the box actually *touches*, which is why the overlap is
+           tested first: charged before the geometry was consulted, the cap let the first
+           live tick of a travelling hitbox burn the only hit a dash or a rush special is
+           authored with, two ticks short of anybody, and the move then walked through its
+           target with 0% on it.  A standing jab cannot show that — its box is live for
+           three ticks and either overlaps on the first one or never does. */
+        if (!aabb(box, target.hurtbox)) continue;
         const cap = 1 + (a.multi || 0);
         const spent = (this.hitCount && this.hitCount.get(target.id)) || 0;
         if (spent >= cap) continue;
         if (this.hitCount) this.hitCount.set(target.id, spent + 1);
-        if (!aabb(box, target.hurtbox)) continue;
         // shield?
         if (target.shieldHP > 0 && !a.grab) {
           this.hitIds.set(target.id, this.actionT);
@@ -1162,8 +1199,11 @@ class Fighter {
           continue;
         }
         this.hitIds.set(target.id, this.actionT);
-        const stale = this.staleMult(a.key || 'jab');
-        this.pushStale(a.key || 'jab');
+        // a special has no `key` of its own, and inheriting 'jab' here would make a
+        // rush grind down the stale multiplier of the jab it was never part of
+        const sk = staleKey || a.key || 'jab';
+        const stale = this.staleMult(sk);
+        this.pushStale(sk);
         match.hitFighter(this, target, {
           damage: a.damage * mult * stale,
           bkb: a.bkb, kbs: a.kbs, angle: a.angle, spike: a.spike,

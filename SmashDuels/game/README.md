@@ -188,7 +188,7 @@ The engine runs headless in node — no browser, no canvas (also from the projec
 
 ```bash
 node tools/animtest.js      # animation states, frame data, hitbox geometry  (29)
-node tools/simtest.js       # physics, collision, state machine, 4-player   (34)
+node tools/simtest.js       # physics, collision, state machine, 4-player   (35)
 node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
 node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
 ```

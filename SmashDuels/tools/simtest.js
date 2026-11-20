@@ -818,6 +818,77 @@ test('dash: a roll rolls, and a rush special covers the distance its data promis
     assert(best < want * 1.9, `${key}'s rush covered ${best.toFixed(0)}px, more than its authored ${want}px`);
   }
 
+/* The other half of a rush: it covers the distance AND it hits what is standing on
+   that distance.  A side special used to be pure theatre — the dash branch of
+   `updateSpecial` granted the speed, the travel budget and the speed lines, and the
+   `damage/bkb/kbs/angle` the move was authored with were read by nothing, because
+   `checkHit` only ran for `a.type === 'move'`.  Fixing that exposed a second bug in the
+   resolver itself: the one-hit cap was charged before the overlap was tested, so the
+   first live tick of a travelling box burned the hit two ticks early and the rush walked
+   through the target with 0% on it.  A standing jab cannot show that, which is why it
+   took a move that moves to find it. */
+test('special: a rush special lands the hit it was authored with', () => {
+  const { ctx } = run();
+  const problems = [];
+  for (const key of ['valor', 'grim', 'astra']) {
+    const m = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const f = m.fighters[0], t = m.fighters[1];
+    control(m).tick(24);
+    const c = control(m, () => ({}));
+    f.onGround = true; f.vx = 0; f.vy = 0; f.hitstun = 0; f.facing = 1;
+    const sp = f.def.specials.side;
+    const reach = Math.max(...sp.hitboxes.map((b) => b.x + b.w)) * f.scale;
+    const dx = f.x + Math.max(reach + 40, 120);      // out of the box until the rush carries it there
+    const pin = () => { t.x = dx; t.y = m.stage.ground.y; t.vx = t.vy = 0; t.hitstun = 0; t.onGround = true; };
+    pin();
+    f.startSpecial('s', m);
+    let touched = false;
+    for (let i = 0; i < sp.frames + 12; i++) {
+      pin();
+      c.tick(1);
+      const b = f.activeBoxes()[0];
+      if (b) {
+        const t0 = t.hurtbox;
+        if (b.box.x < t0.x + t0.w && b.box.x + b.box.w > t0.x && b.box.y < t0.y + t0.h && b.box.y + b.box.h > t0.y) touched = true;
+      }
+    }
+    const spent = (f.hitCount && f.hitCount.get(t.id)) || 0;
+    if (Math.round(t.damage) !== sp.damage) problems.push(`${key}: rush landed ${t.damage}% instead of its authored ${sp.damage}%`);
+    if (spent !== 1) problems.push(`${key}: rush spent ${spent} hits on one target (the cap is 1)`);
+    if (!touched) problems.push(`${key}: the box never overlapped the target, so the hit was not the rush's doing`);
+  }
+  assert(!problems.length, problems.join('\n        '));
+
+  // and it still only hits what the body actually passes through
+  const m2 = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m2.fighters[0], r = m2.fighters[1];
+  control(m2).tick(24);
+  const c2 = control(m2, () => ({}));
+  g.onGround = true; g.vx = 0; g.hitstun = 0; g.facing = 1;
+  r.x = g.x - 140; r.y = g.y; r.vx = r.vy = 0; r.onGround = true;   // behind him, away from the lunge
+  g.startSpecial('s', m2);
+  for (let i = 0; i < 70; i++) { r.x = g.x - 140; c2.tick(1); }
+  assert(r.damage === 0, `a rush hit a fighter standing behind it for ${r.damage}%`);
+
+  // a shield eats it the way every other melee move does: no damage, shield gone
+  const m3 = newMatch(ctx, cast(2, ['valor', 'rook']), 'skyshrine', { state: 'play' });
+  const v = m3.fighters[0], d = m3.fighters[1];
+  control(m3).tick(24);
+  const c3 = control(m3, () => ({}));
+  v.onGround = true; v.vx = 0; v.hitstun = 0; v.facing = 1;
+  const dreach = Math.max(...v.def.specials.side.hitboxes.map((b) => b.x + b.w)) * v.scale;
+  const shield0 = 60;
+  const pin3 = () => {
+    d.x = v.x + Math.max(dreach + 30, 100); d.y = m3.stage.ground.y; d.vx = d.vy = 0; d.hitstun = 0;
+    d.onGround = true; d.shieldHP = shield0; d.shielding = true;
+  };
+  pin3();
+  v.startSpecial('s', m3);
+  for (let i = 0; i < v.def.specials.side.frames + 12; i++) { pin3(); c3.tick(1); }
+  assert(d.damage === 0, `a rushed shield took ${d.damage}% — the box should be eaten by the bubble`);
+  assert(d.shieldHP < shield0, 'the rush passed through a shield without touching it');
+});
+
   // …and a plain grounded move still stays where it was put
   const m3 = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
   const j = m3.fighters[0];

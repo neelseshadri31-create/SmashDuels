@@ -59,7 +59,11 @@ const FIGHTERS = {
     },
     specials: {
       neutral: { name: 'LUNAR SLASH', desc: 'Crescent projectile', type: 'projectile', frames: 40, startup: 10, damage: 8, bkb: 14, kbs: 40, angle: 40, cooldown: 26 },
-      side: { name: 'RUSH STRIKE', desc: 'Dashing blade rush', type: 'dash', frames: 44, startup: 8, damage: 12, bkb: 24, kbs: 58, angle: 40, dist: 150 },
+      /* A rush special is a body travelling through someone else, so it carries a hitbox
+         like any melee move: `active` is how many ticks the authored `dist` takes at the
+         rush speed (12 px/tick), and the box is the fighter's own dash attack, widened a
+         touch because the whole body commits to this one. */
+      side: { name: 'RUSH STRIKE', desc: 'Dashing blade rush', type: 'dash', frames: 44, startup: 8, damage: 12, bkb: 24, kbs: 58, angle: 40, dist: 150, active: 13, hitboxes: [hb(8, -64, 64, 48)] },
       up: { name: 'SKYWARD ASCENT', desc: 'Rising recovery', type: 'recover', frames: 40, startup: 3, damage: 9, bkb: 18, kbs: 46, angle: 80, rise: 9.2, drift: 4.2 },
       down: { name: 'GUARDIAN STANCE', desc: 'Counter stance', type: 'counter', frames: 40, startup: 1, window: 20, mult: 1.35 },
     },
@@ -102,7 +106,7 @@ const FIGHTERS = {
     },
     specials: {
       neutral: { name: 'MAGMA FIST', desc: 'Heavy fireball', type: 'projectile', frames: 48, startup: 14, damage: 12, bkb: 20, kbs: 52, angle: 35, cooldown: 34, big: 1 },
-      side: { name: 'RUSH STRIKE', desc: 'Shoulder charge', type: 'dash', frames: 52, startup: 12, damage: 16, bkb: 30, kbs: 62, angle: 38, dist: 170 },
+      side: { name: 'RUSH STRIKE', desc: 'Shoulder charge', type: 'dash', frames: 52, startup: 12, damage: 16, bkb: 30, kbs: 62, angle: 38, dist: 170, active: 14, hitboxes: [hb(-8, -78, 76, 62)] },
       up: { name: 'SKYWARD ASCENT', desc: 'Erupting uppercut', type: 'recover', frames: 48, startup: 4, damage: 13, bkb: 22, kbs: 50, angle: 85, rise: 9.8, drift: 3.2 },
       down: { name: 'GUARDIAN STANCE', desc: 'Stone guard + quake', type: 'counter', frames: 46, startup: 1, window: 22, mult: 1.5 },
     },
@@ -145,7 +149,7 @@ const FIGHTERS = {
     },
     specials: {
       neutral: { name: 'SHOOTING STAR BOLT', desc: 'Piercing star bolt', type: 'projectile', frames: 42, startup: 11, damage: 7, bkb: 12, kbs: 38, angle: 38, cooldown: 24, pierce: 1 },
-      side: { name: 'COMET RUSH', desc: 'Trailing comet dash', type: 'dash', frames: 46, startup: 9, damage: 10, bkb: 22, kbs: 52, angle: 42, dist: 165, float: 1 },
+      side: { name: 'COMET RUSH', desc: 'Trailing comet dash', type: 'dash', frames: 46, startup: 9, damage: 10, bkb: 22, kbs: 52, angle: 42, dist: 165, float: 1, active: 14, hitboxes: [hb(-2, -72, 62, 56)] },
       up: { name: 'STAR BLINK', desc: 'Teleport recovery', type: 'teleport', frames: 40, startup: 8, damage: 8, bkb: 16, kbs: 40, angle: 80, dist: 210 },
       down: { name: 'GRAVITY ORB', desc: 'Pulling void orb', type: 'orb', frames: 46, startup: 12, damage: 2, bkb: 4, kbs: 6, angle: 90, cooldown: 40 },
     },
