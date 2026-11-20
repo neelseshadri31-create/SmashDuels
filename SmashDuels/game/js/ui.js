@@ -395,7 +395,7 @@ const UI = (() => {
     SAVE.load();
     INPUT.init();
     /* Printed on boot so "is my tab running the new code?" is a one-glance answer. */
-    console.info(`[rift] build ${BUILD}`);
+    console.info('[rift] build ' + (typeof BUILD !== 'undefined' ? BUILD : '?'));
     buildTitle();
     buildSelect();
     setupMatchScreen();

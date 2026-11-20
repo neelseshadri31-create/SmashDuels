@@ -10,6 +10,7 @@
    about it is green.  The version rides on the URL, so a new build cannot be reused
    from cache.  Bump this in the same commit as any change under game/js or game/assets;
    tools/atlascheck.js fails the build if index.html or the asset loader drifts from it,
+   and the preview is served by tools/serve.py, which sends no-cache headers for the same reason,
    and `UI.diag().build` / the console banner say which build is actually running. */
 const BUILD = 'K7';
 
