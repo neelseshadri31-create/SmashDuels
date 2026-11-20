@@ -215,6 +215,7 @@ function scene(h, name, spec, key) {
       (empty.length ? `   (rows with an unpainted frame: ${empty.join(' ')})` : ''));
   }
   console.log(`\n${keys.length ? keys.length : KEYS.length} spec(s), ${total} frames -> ${path.relative(path.join(__dirname, '..'), OUT)}/`);
-  console.log('now:  python3 tools/film_render.py          (needs Pillow; in this sandbox'
-    + ' the venv at ../.imgenv has it:  ../.imgenv/bin/python tools/film_render.py)');
+  console.log('now:  python3 tools/film_render.py          (needs Pillow; a freshly rebuilt'
+    + ' sandbox has none in the system python — python3 -m venv /tmp/venv'
+    + ' && /tmp/venv/bin/pip install pillow, then /tmp/venv/bin/python tools/film_render.py)');
 })().catch((e) => { console.error(e && e.stack || e); process.exit(1); });

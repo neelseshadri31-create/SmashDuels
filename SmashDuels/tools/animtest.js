@@ -1055,6 +1055,84 @@ test('smooth: hitlag and a blocked body are never predicted past', async () => {
   assert(lead <= 0.001, `a body pinned at the wall was drawn ${lead.toFixed(2)}px past where the sim put it`);
 });
 
+test('smooth: a fast body is led the whole way, not by a fixed cap', async () => {
+  /* The bug the "stuttery" report came down to: the lead was clamped to 4px, and a
+     fighter falls at 10-17px a tick, so every other frame threw two thirds of the
+     movement away and handed it back on the next tick.  The bound that survives is the
+     distance the body actually travelled, which is exact for anything in free motion. */
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  const at = (tick, alpha) => {
+    f.animT = tick; f.hitlag = 0;
+    f.x = tick * 12; f.y = -tick * 12; f.vx = 12; f.vy = -12;
+    const undo = S.beginFrame(m, alpha);
+    const led = [f.x - tick * 12, f.y + tick * 12];
+    if (undo) undo();
+    return led;
+  };
+  at(1, 0.5);                                 // first sample: no travel known yet, so no lead
+  const [lx, ly] = at(2, 0.5);                 // second: the body moved 12px on the last tick
+  assert(lx > 5.9, `a body travelling 12px a tick was led ${lx.toFixed(2)}px sideways`);
+  assert(ly < -5.9, `a body falling 12px a tick was led ${ly.toFixed(2)}px`);
+});
+
+test('smooth: a loop row dissolves into the next cell, an attack row never does', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  f.state = 'walk'; f.onGround = true; f.vx = 3.2;
+  let mixes = 0, rows = new Set();
+  for (let i = 0; i < 40; i++) {
+    f.animT = i; f.y = 0;
+    const sel = S.pickAnim(f, i * 16);
+    if (sel && sel.mix) { mixes++; rows.add(sel.name); }
+  }
+  assert(mixes > 6, `only ${mixes} of 40 walk ticks had a real dissolve (f > 0.3)`);
+  assert(rows.has('walk'), `the dissolve never ran on the walk row (saw: ${[...rows].join(',') || 'nothing'})`);
+  /* and the drawing has to follow through: two cells of the row, painted at
+     complementary alphas, so the pose you see is between the two rather than one of
+     them.  One blit at full alpha means the mix was computed and then dropped. */
+  const rec = { ops: [] };
+  const rctx = makeCtx(rec);
+  let pairs = 0, soloed = 0, litNeeded = 0, litOk = 0;
+  for (let i = 0; i < 40; i++) {
+    f.state = 'walk'; f.animT = i; f.y = 0;
+    const sel = S.pickAnim(f, i * 16);
+    rec.ops.length = 0;
+    rctx.globalAlpha = 1; rctx.globalCompositeOperation = 'source-over';
+    S.drawSpriteFighter(rctx, f, i * 16);
+    const soft = rec.ops.filter((o) => o.op === 'drawImage' && o.alpha < 1 && o.sx !== undefined);
+    if (sel && sel.mix && sel.mix.f > 0.3) {
+      if (soft.length === 2 && new Set(soft.map((o) => o.sx)).size === 2) pairs++;
+    } else if (!soft.length) soloed++;
+    /* baked glow is light, not ink: a dissolve that takes the gauntlet fire with it
+       makes the sprite flicker, which is a worse tell than the hard cell cut was */
+    const parts = (sel && sel.frames && sel.frames[sel.i] && sel.frames[sel.i][3]) || [];
+    if (parts.length) {
+      litNeeded++;
+      if (rec.ops.some((o) => o.op === 'drawImage' && o.blend === 'lighter')) litOk++;
+    }
+  }
+  assert(pairs > 6, `only ${pairs} of the dissolving frames actually drew two cells of the row`);
+  assert(soloed > 6, `only ${soloed} frames drew a single crisp cell — the dissolve is leaking everywhere`);
+  assert(litNeeded > 0, 'this row has no baked glow to test — the fixture moved');
+  assert(litOk === litNeeded, `${litNeeded - litOk} dissolving frames dropped the tile's baked glow — the sprite flickers`);
+  f.state = 'attack';
+  f.action = { type: 'move', key: 'jab', startup: 4, active: 3, dur: 16, hitboxes: [] };
+  let bad = 0;
+  for (let i = 0; i < 16; i++) {
+    f.animT = i; f.actionT = i;
+    const sel = S.pickAnim(f, i * 16);
+    if (sel && sel.mix) bad++;
+  }
+  assert(bad === 0, `${bad} attack frames were cross-dissolved — the strike tile is the hit window and has to stay crisp`);
+});
+
 /* ---------------- entry ---------------- */
 (async () => {
   const fail = await T.run(process.argv[2]);

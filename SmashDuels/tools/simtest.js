@@ -924,5 +924,125 @@ test('grab: a pummel damages its victim inside the grab instead of launching the
   void x0;
 });
 
+/* =================== blocked hits, lunge windows, and the copied decks ===================
+   Playtest report: "dash attack still doesn't inflict damage — look at damage logic and
+   hitboxes".  The hitboxes were already fine (see the reach tests above); what was not:
+   a held shield absorbed a hit *entirely* — shield HP fell, hitlag fired, and the damage
+   meter did not move a point, so every attack into a blocking CPU read as a dud — and a
+   run attack's box died before its lunge stopped travelling, so a foe reached late was
+   walked through with 0% on them.  Both are pinned below, and the decks the AI hides
+   behind are now the templates they came from. */
+
+/* `run` frames of held direction, then the attack button, then let it play out. */
+function attackInto(h, key, foeKey, gap, foeShield, stage) {
+  const m = newMatch(h.ctx, cast(2, [key, foeKey || 'rook']), stage || 'skyshrine', { state: 'play' });
+  m.rules.items = 'off';
+  m.rules.hazards = false;
+  const a = m.fighters[0], b = m.fighters[1];
+  control(m).tick(30);
+  const gr = m.stage.ground, px = gr.x + 160;
+  a.x = px; a.y = gr.y; a.vx = 0; a.vy = 0; a.state = 'idle'; a.onGround = true; a.facing = 1;
+  b.x = px + gap; b.y = gr.y; b.vx = 0; b.vy = 0; b.state = 'idle'; b.onGround = true;
+  b.spawnProtect = 0; b.invincT = 0;
+  // 30 ticks of running first: that is what a player does — hold the direction, let the
+  // dash come, then press.  Attacking off a standstill is a different move (a tilt).
+  let n = 0;
+  const ctl = control(m, (f) => {
+    if (f === a) return { right: n < 30, attack: n >= 30 };
+    return foeShield ? { shield: true } : {};
+  });
+  let move = null, live = 0, dealt = 0;
+  for (let i = 0; i < 150; i++, n++) {
+    m.items.length = 0;                       // rules.items='off' only stops the *next* spawn
+    if (foeShield) { b.shieldHP = Math.max(b.shieldHP, 45); b.shielding = true; }
+    const before = b.damage;
+    ctl.tick(1);
+    dealt += b.damage - before;
+    if (a.action && !move) move = a.action.key || a.action.type;
+    if (a.activeBoxes && a.activeBoxes().length) live++;
+  }
+  return { a, b, move, live, dealt, shieldHP: b.shieldHP };
+}
+
+test('shield: a blocked hit is damage with a discount, not nothing', () => {
+  const h = boot();
+  for (const key of ['grim', 'valor']) {
+    const open = attackInto(h, key, 'rook', 110, false);
+    const blocked = attackInto(h, key, 'rook', 110, true);
+    assert(open.move === 'dashattack', `${key}: the run attack produced ${open.move}`);
+    assert(open.dealt > 0, `${key}: a dash attack into an open foe dealt 0% — the move cannot hit`);
+    assert(blocked.dealt > 0, `${key}: into a held shield the same attack dealt 0% of ${open.dealt}`);
+    assert(blocked.dealt < open.dealt, `${key}: blocking is worth nothing (${blocked.dealt} vs ${open.dealt})`);
+    assert(blocked.shieldHP < 60, `${key}: the shield did not even take the hit`);
+  }
+});
+
+test('dash: the lunge keeps its hitbox for as long as it is still travelling', () => {
+  const h = boot();
+  for (const key of ['grim', 'valor', 'astra', 'vesper', 'rook']) {
+    const r = attackInto(h, key, 'rook', 240, false);
+    assert(r.move === 'dashattack', `${key}: expected a dash attack, got ${r.move}`);
+    assert(r.live >= 8, `${key}: the box was live for ${r.live} ticks — shorter than the charge that carries it`);
+    assert(r.dealt > 0, `${key}: a foe 240px away was walked through with 0% on them`);
+  }
+});
+
+/* The Ultimate templates the decks below are copied from: Battlefield is a flat deck,
+   three soft platforms above it and one low one over the middle; Final Destination is
+   that deck with the soft platforms removed.  A deck that claims a form and does not
+   have its shape is the bug worth catching, because the shape is the whole idea. */
+const FORMS = {
+  field: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  bigfield: { platforms: 5, minAbove: 4, low: true, hazard: null },
+  smallfield: { platforms: 3, minAbove: 2, low: true, hazard: null },
+  nullshore: { platforms: 0, minAbove: 0, low: false, hazard: null },
+  terminal: { platforms: 0, minAbove: 0, low: false, hazard: null },
+  stadium: { platforms: 2, minAbove: 2, low: false, hazard: null },
+  village: { platforms: 3, minAbove: 3, low: false, hazard: null },
+  towncity: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  cartoon: { platforms: 3, minAbove: 3, low: false, hazard: null },
+  league: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  cruise: { platforms: 3, minAbove: 3, low: false, hazard: 'pillar' },
+};
+
+test('decks: every stage is playable, and the copied ones keep the template they name', () => {
+  const h = boot();
+  const { STAGES, WORLD } = h.g;
+  const keys = Object.keys(STAGES);
+  assert(keys.length >= 16, `only ${keys.length} decks in the roster`);
+  for (const k of keys) {
+    const s = STAGES[k], g = s.ground;
+    assert(s.name && s.sub && s.theme && s.accent && s.bg.length === 3, `${k}: a deck needs name, sub, theme, accent and a 3-stop sky`);
+    assert(g.w >= 800 && g.w <= 1400, `${k}: deck is ${g.w}px wide — off the thumb scale, out of the camera's range`);
+    assert(g.x >= WORLD.blast.left && g.x + g.w <= WORLD.blast.right, `${k}: the deck reaches past the blast lines`);
+    for (const p of s.platforms) {
+      assert(p.x >= g.x - 40 && p.x + p.w <= g.x + g.w + 40, `${k}: a platform hangs off the deck it sits over`);
+      assert(p.y < -60, `${k}: a platform at y=${p.y} is inside the deck, not above it`);
+      assert(p.w >= 100 && p.h >= 12, `${k}: a ${p.w}x${p.h} platform is a lip, not a ledge`);
+    }
+    const form = FORMS[k];
+    if (form) {
+      assert(s.platforms.length === form.platforms,
+        `${k}: ${s.platforms.length} platforms, but it is sold as the form with ${form.platforms}`);
+      const above = s.platforms.filter((p) => p.y < -140).length;
+      assert(above >= form.minAbove, `${k}: ${above} high platforms, expected at least ${form.minAbove}`);
+      assert(!!s.platforms.find((p) => p.y >= -140) === form.low, `${k}: the low centre platform this form is defined by is missing`);
+      assert((s.hazard && s.hazard.type) === form.hazard, `${k}: hazard is ${s.hazard && s.hazard.type}, expected ${form.hazard}`);
+    }
+    // and it plays: four seconds of holding left must reach the far edge of the deck —
+    // a wall, a platform in the way or a fighter that cannot turn is the usual way a
+    // hand-tuned layout quietly stops being playable.  Ledges are allowed to catch them.
+    const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), k, { state: 'play' });
+    m.rules.items = 'off';
+    const f = m.fighters[0];
+    let edge = 1e9;
+    const ctl = control(m, (ff) => (ff === f ? { left: true } : {}));
+    for (let i = 0; i < 240; i++) { ctl.tick(1); edge = Math.min(edge, f.x); }
+    assert(m.frame > 200, `${k}: the match stopped ticking`);
+    assert(edge <= m.stage.ground.x + 40 || f.eliminated,
+      `${k}: a fighter held at the left edge for 4s got only to x=${edge.toFixed(0)} of deck edge ${m.stage.ground.x}`);
+  }
+});
+
 /* ---------------- entry ---------------- */
 T.run(process.argv[2]).then(fail => process.exit(fail ? 1 : 0));

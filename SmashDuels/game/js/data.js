@@ -47,7 +47,7 @@ const FIGHTERS = {
       ftilt: mv({ name: 'Sword Arc', frames: 32, startup: 6, active: 4, damage: 9, bkb: 18, kbs: 52, angle: 32, reach: 54, hitboxes: [hb(18, -66, 56, 46)] }),
       utilt: mv({ name: 'Rising Arc', frames: 32, startup: 5, active: 5, damage: 8, bkb: 20, kbs: 56, angle: 96, hitboxes: [hb(-20, -110, 74, 58)] }),
       dtilt: mv({ name: 'Low Sweep', frames: 28, startup: 4, active: 3, damage: 7, bkb: 16, kbs: 42, angle: 18, hitboxes: [hb(14, -26, 52, 28)] }),
-      dashattack: mv({ name: 'Lunge', frames: 38, startup: 5, active: 6, damage: 10, bkb: 26, kbs: 46, angle: 40, hitboxes: [hb(6, -62, 58, 46)] }),
+      dashattack: mv({ name: 'Lunge', frames: 38, startup: 5, active: 11, damage: 10, bkb: 26, kbs: 46, angle: 40, hitboxes: [hb(6, -86, 62, 78)] }),
       fsmash: mv({ name: 'Lunar Cleave', frames: 52, startup: 12, active: 4, damage: 16, bkb: 30, kbs: 92, angle: 33, reach: 62, charge: 1, hitboxes: [hb(16, -76, 70, 60)] }),
       usmash: mv({ name: 'Starfall', frames: 46, startup: 9, active: 5, damage: 15, bkb: 26, kbs: 88, angle: 88, charge: 1, hitboxes: [hb(-30, -122, 92, 66)] }),
       dsmash: mv({ name: 'Twin Sweep', frames: 46, startup: 8, active: 4, damage: 13, bkb: 24, kbs: 82, angle: 22, charge: 1, hitboxes: [hb(-56, -22, 66, 34), hb(16, -22, 66, 34)] }),
@@ -94,7 +94,7 @@ const FIGHTERS = {
       ftilt: mv({ name: 'Overhand', frames: 40, startup: 10, active: 4, damage: 13, bkb: 24, kbs: 60, angle: 38, hitboxes: [hb(14, -84, 66, 66)] }),
       utilt: mv({ name: 'Rising Rock', frames: 38, startup: 8, active: 5, damage: 11, bkb: 24, kbs: 62, angle: 92, hitboxes: [hb(-26, -122, 84, 60)] }),
       dtilt: mv({ name: 'Ground Pound', frames: 34, startup: 7, active: 3, damage: 9, bkb: 20, kbs: 46, angle: 25, hitboxes: [hb(6, -22, 64, 32)] }),
-      dashattack: mv({ name: 'Freight Train', frames: 46, startup: 9, active: 8, damage: 14, bkb: 30, kbs: 50, angle: 42, hitboxes: [hb(-4, -76, 70, 66)] }),
+      dashattack: mv({ name: 'Freight Train', frames: 46, startup: 9, active: 13, damage: 14, bkb: 30, kbs: 50, angle: 42, hitboxes: [hb(-4, -92, 74, 84)] }),
       fsmash: mv({ name: 'Continental Punch', frames: 62, startup: 18, active: 5, damage: 23, bkb: 34, kbs: 100, angle: 30, charge: 1, hitboxes: [hb(14, -90, 82, 78)] }),
       usmash: mv({ name: 'Tectonic Rise', frames: 58, startup: 14, active: 5, damage: 20, bkb: 30, kbs: 94, angle: 90, charge: 1, hitboxes: [hb(-38, -130, 108, 78)] }),
       dsmash: mv({ name: 'Seismic Slam', frames: 56, startup: 13, active: 5, damage: 18, bkb: 26, kbs: 88, angle: 20, charge: 1, hitboxes: [hb(-74, -30, 88, 42), hb(20, -30, 88, 42)] }),
@@ -137,7 +137,7 @@ const FIGHTERS = {
       ftilt: mv({ name: 'Crescent Push', frames: 34, startup: 7, active: 5, damage: 8, bkb: 16, kbs: 46, angle: 35, hitboxes: [hb(16, -72, 66, 48)] }),
       utilt: mv({ name: 'Star Lift', frames: 34, startup: 6, active: 5, damage: 7, bkb: 18, kbs: 52, angle: 95, hitboxes: [hb(-26, -116, 76, 60)] }),
       dtilt: mv({ name: 'Comet Sweep', frames: 30, startup: 5, active: 4, damage: 6, bkb: 14, kbs: 38, angle: 20, hitboxes: [hb(10, -24, 58, 28)] }),
-      dashattack: mv({ name: 'Nova Rush', frames: 40, startup: 6, active: 6, damage: 9, bkb: 22, kbs: 42, angle: 42, hitboxes: [hb(4, -66, 60, 50)] }),
+      dashattack: mv({ name: 'Nova Rush', frames: 40, startup: 6, active: 11, damage: 9, bkb: 22, kbs: 42, angle: 42, hitboxes: [hb(4, -84, 64, 68)] }),
       fsmash: mv({ name: 'Starfall Arc', frames: 54, startup: 13, active: 5, damage: 15, bkb: 26, kbs: 84, angle: 36, charge: 1, hitboxes: [hb(12, -86, 84, 70)] }),
       usmash: mv({ name: 'Constellation', frames: 50, startup: 10, active: 6, damage: 13, bkb: 24, kbs: 82, angle: 90, charge: 1, hitboxes: [hb(-36, -132, 104, 74)] }),
       dsmash: mv({ name: 'Gravity Well', frames: 50, startup: 10, active: 5, damage: 12, bkb: 22, kbs: 76, angle: 18, charge: 1, hitboxes: [hb(-76, -26, 92, 40), hb(18, -26, 92, 40)] }),
@@ -180,7 +180,7 @@ const FIGHTERS = {
       ftilt: mv({ name: 'Cross Slash', frames: 26, startup: 4, active: 3, damage: 7, bkb: 14, kbs: 44, angle: 34, hitboxes: [hb(12, -64, 50, 40)] }),
       utilt: mv({ name: 'Fan Kick', frames: 26, startup: 4, active: 4, damage: 6, bkb: 14, kbs: 48, angle: 92, hitboxes: [hb(-22, -108, 68, 52)] }),
       dtilt: mv({ name: 'Low Sting', frames: 24, startup: 3, active: 3, damage: 5, bkb: 12, kbs: 34, angle: 16, hitboxes: [hb(10, -22, 46, 26)] }),
-      dashattack: mv({ name: 'Shredding Dash', frames: 34, startup: 4, active: 5, damage: 8, bkb: 18, kbs: 40, angle: 40, hitboxes: [hb(2, -62, 54, 44)] }),
+      dashattack: mv({ name: 'Shredding Dash', frames: 34, startup: 4, active: 10, damage: 8, bkb: 18, kbs: 40, angle: 40, hitboxes: [hb(2, -80, 58, 62)] }),
       fsmash: mv({ name: 'Twin Fang', frames: 44, startup: 9, active: 4, damage: 13, bkb: 24, kbs: 84, angle: 32, charge: 1, hitboxes: [hb(10, -70, 62, 52)] }),
       usmash: mv({ name: 'Viper Rise', frames: 42, startup: 8, active: 5, damage: 12, bkb: 22, kbs: 80, angle: 88, charge: 1, hitboxes: [hb(-30, -118, 84, 62)] }),
       dsmash: mv({ name: 'Low Twin Slash', frames: 42, startup: 8, active: 4, damage: 11, bkb: 20, kbs: 76, angle: 20, charge: 1, hitboxes: [hb(-62, -24, 76, 36), hb(14, -24, 76, 36)] }),
@@ -223,7 +223,7 @@ const FIGHTERS = {
       ftilt: mv({ name: 'Bayonet Sweep', frames: 32, startup: 6, active: 4, damage: 8, bkb: 16, kbs: 48, angle: 33, hitboxes: [hb(14, -70, 62, 44)] }),
       utilt: mv({ name: 'Stock Upper', frames: 32, startup: 5, active: 5, damage: 7, bkb: 18, kbs: 54, angle: 94, hitboxes: [hb(-24, -114, 74, 56)] }),
       dtilt: mv({ name: 'Low Shot', frames: 30, startup: 5, active: 4, damage: 6, bkb: 14, kbs: 38, angle: 18, hitboxes: [hb(12, -24, 56, 28)] }),
-      dashattack: mv({ name: 'Sliding Shot', frames: 38, startup: 6, active: 6, damage: 9, bkb: 20, kbs: 44, angle: 40, hitboxes: [hb(4, -64, 62, 46)] }),
+      dashattack: mv({ name: 'Sliding Shot', frames: 38, startup: 6, active: 11, damage: 9, bkb: 20, kbs: 44, angle: 40, hitboxes: [hb(4, -84, 66, 70)] }),
       fsmash: mv({ name: 'Charged Hex Blast', frames: 56, startup: 15, active: 5, damage: 16, bkb: 28, kbs: 86, angle: 34, charge: 1, hitboxes: [hb(10, -78, 92, 66)] }),
       usmash: mv({ name: 'Rune Pillar', frames: 50, startup: 11, active: 6, damage: 13, bkb: 24, kbs: 84, angle: 90, charge: 1, hitboxes: [hb(-30, -128, 96, 76)] }),
       dsmash: mv({ name: 'Trap Burst', frames: 50, startup: 11, active: 5, damage: 12, bkb: 22, kbs: 78, angle: 18, charge: 1, hitboxes: [hb(-70, -24, 88, 38), hb(18, -24, 88, 38)] }),
@@ -373,6 +373,128 @@ const STAGES = {
     ],
     ledges: true, hazard: { type: 'pillar', x: 0, w: 90, period: 420, dmg: 10, kb: 0.9 },
   },
+  /* ---------- decks copied from the Super Smash Bros. Ultimate stage templates ----------
+     Ultimate builds almost every stage out of four interchangeable *forms*, and the two
+     that matter here are the ones the competitive set is made of:
+       Battlefield — a flat main platform, three soft platforms above it (two to the
+         sides, one high in the middle) and one low platform in the middle of the deck;
+         no walls, no hazards, no moving parts.
+       Final Destination / Omega — the same deck with every soft platform removed.
+     Big Battlefield and Small Battlefield are the same layout at another size, and the
+     tournament stages (Pokémon Stadium 2, Town & City, Smashville) are Battlefield
+     variants with the low centre platform dropped, added or rearranged.  That is why
+     these entries are proportions, not new mechanics: what is being copied is where the
+     platforms sit and how far the deck reaches, so a rally plays the same shape here.
+     Names, colours and backdrops are ours; the geometry is the template's.  */
+  field: {
+    key: 'field', name: 'RIFT FIELD', sub: 'Battlefield form · 4 soft platforms', theme: 'island',
+    bg: ['#0a1428', '#17304f', '#2f5f86'], accent: '#7fd0ff',
+    ground: { x: -590, y: 0, w: 1180, h: 44 },
+    platforms: [
+      { x: -330, y: -190, w: 200, h: 18 },
+      { x: 130, y: -190, w: 200, h: 18 },
+      { x: -100, y: -346, w: 200, h: 18 },
+      { x: -70, y: -104, w: 140, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  bigfield: {
+    key: 'bigfield', name: 'BROADSIDE FIELD', sub: 'Big Battlefield form · widest deck', theme: 'island',
+    bg: ['#0b1024', '#1b2547', '#3b4f7a'], accent: '#9ecbff',
+    ground: { x: -700, y: 0, w: 1400, h: 44 },
+    platforms: [
+      { x: -400, y: -186, w: 190, h: 18 },
+      { x: -95, y: -186, w: 190, h: 18 },
+      { x: 210, y: -186, w: 190, h: 18 },
+      { x: -100, y: -350, w: 200, h: 18 },
+      { x: -70, y: -100, w: 140, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  smallfield: {
+    key: 'smallfield', name: 'LESSER FIELD', sub: 'Small Battlefield form · tight', theme: 'island',
+    bg: ['#0d1730', '#22355c', '#41638f'], accent: '#69c8ff',
+    ground: { x: -440, y: 0, w: 880, h: 44 },
+    platforms: [
+      { x: -250, y: -180, w: 170, h: 16 },
+      { x: 80, y: -180, w: 170, h: 16 },
+      { x: -60, y: -96, w: 120, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  nullshore: {
+    key: 'nullshore', name: 'NULL SHORE', sub: 'Final Destination form · flat, no platforms', theme: 'rift',
+    bg: ['#120c22', '#241a44', '#43356b'], accent: '#b98cff',
+    ground: { x: -700, y: 0, w: 1400, h: 44 }, platforms: [],
+    ledges: true, hazard: null,
+  },
+  stadium: {
+    key: 'stadium', name: 'STADIUM DECK', sub: 'Pokémon Stadium 2 form · wide, 2 soft platforms', theme: 'arena',
+    bg: ['#0a1a12', '#14352a', '#2a5c42'], accent: '#4ce0a8',
+    ground: { x: -590, y: 0, w: 1180, h: 44 },
+    platforms: [
+      { x: -340, y: -176, w: 210, h: 16 },
+      { x: 130, y: -176, w: 210, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  towncity: {
+    key: 'towncity', name: 'CITY STREET', sub: 'Town & City form · long deck, traffic below', theme: 'city',
+    bg: ['#101626', '#22304a', '#48566f'], accent: '#ffd166',
+    ground: { x: -680, y: 0, w: 1360, h: 44 },
+    platforms: [
+      { x: -370, y: -186, w: 200, h: 16 },
+      { x: 170, y: -186, w: 200, h: 16 },
+      { x: -100, y: -330, w: 200, h: 16 },
+      { x: -70, y: -100, w: 140, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  village: {
+    key: 'village', name: 'VILLAGE GREEN', sub: 'Smashville form · three soft platforms in a row', theme: 'city',
+    bg: ['#12200f', '#26451f', '#4a7038'], accent: '#9be84f',
+    ground: { x: -600, y: 0, w: 1200, h: 44 },
+    platforms: [
+      { x: -350, y: -184, w: 190, h: 16 },
+      { x: -95, y: -184, w: 190, h: 16 },
+      { x: 160, y: -184, w: 190, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  cartoon: {
+    key: 'cartoon', name: 'CARTOON PLAINS', sub: "Yoshi's Story form · flat deck, two ledges", theme: 'hollow',
+    bg: ['#123a1d', '#2e7a3a', '#63c46a'], accent: '#ffe066',
+    ground: { x: -575, y: 0, w: 1150, h: 44 },
+    platforms: [
+      { x: -300, y: -176, w: 190, h: 16 },
+      { x: 110, y: -176, w: 190, h: 16 },
+      { x: -95, y: -318, w: 190, h: 16 },
+    ],
+    ledges: true, hazard: null,
+  },
+  cruise: {
+    key: 'cruise', name: 'CRUISE LINER', sub: 'Lylat Cruise form · two tiers, blast panels', theme: 'comet',
+    bg: ['#0d0f2a', '#1f2350', '#3b3f7d'], accent: '#6ad0ff',
+    ground: { x: -590, y: 0, w: 1180, h: 44 },
+    platforms: [
+      { x: -330, y: -150, w: 180, h: 16 },
+      { x: 150, y: -150, w: 180, h: 16 },
+      { x: -100, y: -286, w: 200, h: 16 },
+    ],
+    ledges: true, hazard: { type: 'pillar', x: 0, w: 84, period: 380, dmg: 9, kb: 1.0 },
+  },
+  league: {
+    key: 'league', name: 'SNOW LEAGUE', sub: 'Kalos League form · high centre, cold edges', theme: 'arena',
+    bg: ['#0f1b2b', '#23405c', '#5b7fa0'], accent: '#c8ecff',
+    ground: { x: -560, y: 0, w: 1120, h: 44 },
+    platforms: [
+      { x: -330, y: -188, w: 200, h: 16 },
+      { x: 130, y: -188, w: 200, h: 16 },
+      { x: -100, y: -352, w: 200, h: 16 },
+      { x: -70, y: -104, w: 140, h: 16, move: { axis: 'y', amp: 22, speed: 0.014 } },
+    ],
+    ledges: true, hazard: null,
+  },
   range: {
     key: 'range', name: 'RUNE RANGE', sub: 'Sloped ruins · wide', theme: 'range',
     bg: ['#0f1710', '#22301c', '#3c5230'], accent: '#22e08a',
@@ -420,6 +542,22 @@ const ITEM_POOL_COMMON = ['beamsword', 'homerunbat', 'starrod', 'bobomb', 'shell
 /* ============================================================
    RULES DEFAULTS
    ============================================================ */
+/* Blocking is not free.  A shield used to absorb a hit *entirely*: `shieldHit`
+   spent shield HP and gave shield-stun, and the defender's damage meter never
+   moved.  Against anyone who holds shield while you run at them — which is what
+   a dash attack meets in every real rally — the attack looked and sounded like it
+   connected (sparks, hitlag, the shield ring, shield HP draining) while the percent
+   stayed frozen, so the overwhelmingly reasonable read was "my dash attack deals no
+   damage".  A blocked hit now bleeds a fraction of its damage through — a house
+   rule, chosen over "shields absorb everything" because a fight where blocking costs
+   nothing has no answer to a shield except waiting — and the chip is credited to the
+   attacker so it lands in the combo/records path like any other hit.
+   `chip` is a fraction of the move's authored damage; 0 keeps the old behaviour. */
+const SHIELD = {
+  chip: 0.3,
+  chipMin: 1,
+};
+
 const DEFAULT_RULES = {
   mode: 'stock',
   stocks: 3,

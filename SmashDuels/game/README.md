@@ -66,12 +66,27 @@ baked effect into a separate overlay tile so `vfxGate` can still fade it — but
 frame as one tile when the biggest blob in it is too flat to be a pose, because a smoke puff
 that happens to be wider than the ninja beside it is not the body — packs the tiles into
 space the atlas is not already using (growing the canvas if there is none) and rewrites the
-row in the JSON.  Idempotent per row, and `--key grim --revert` restores the atlas.
+row in the JSON.  Idempotent per row.
+
+`--revert` is not: it restores the atlas to the state saved **before the first injection ever
+ran**, so it takes the other injected rows with it.  Undo *one* batch by restoring that key's
+`json` + `png` from git (`git show HEAD:./game/assets/atlas/grim.json > …`, both files) and
+re-running the tool; `atlascheck`'s `rows:` test is what tells you if you forgot.
+
+Pillow is the only dependency, and a sandbox that has just been rebuilt will not have it in the
+system Python (PEP 668): `python3 -m venv /tmp/venv && /tmp/venv/bin/pip install pillow`.
 
 ```bash
-../.imgenv/bin/python tools/slice_rows.py --key grim \
+/tmp/venv/bin/python tools/slice_rows.py --key grim \
         --sheet assets-src/rows/grim-rows.png --rows dashattack,dash,rollfwd,rollback --cells 4
+/tmp/venv/bin/python tools/slice_rows.py --key grim --sheet assets-src/rows/grim-loco.png \
+        --rows idle,walk,run --cells 8,8,8 --dry --preview /tmp/prev.png   # look first
 ```
+
+Rows are matched from the **top** of the sheet, so `--rows walk,run` against a three-row sheet
+labels row 1 `walk` and row 2 `run` and only warns that a row went unused.  Either list every
+row in order, or crop the sheet down to the rows you want (the `--dry` preview shows which
+band became which row before a byte is written).
 
 ### Watching an animation without a browser
 
@@ -88,6 +103,17 @@ python3 tools/film_render.py valor            # → anim-films/valor.film.png / 
 python3 tools/film_render.py --rows fsmash,walk,dash   # just those rows
 python3 tools/film_render.py valor --cols 13  # tile count per row (13 = one per tick)
 ```
+
+Both the contact sheet and the GIF draw the tile the renderer asked for, so the dissolve
+(`render.js`'s `mix`, which fades a loop row into its next cell) is visible in them — and if a
+frame ever looks wrong there but right in the browser, believe the browser and check that
+`tools/film_render.py` is clipping to each tile's source rect: sampling an atlas without
+clipping bleeds the neighbouring art through, and a 4px dust speck becomes a 170px flame.
+
+Two switches are worth knowing when a film disagrees with your eyes: `Sprites.setSmooth(false)`
+turns off the dissolve between cells (hard cuts, the retro read), and `--blend=0` turns off the
+sub-tick position lead — which on a 120 Hz panel takes grim's walk/run from 0 stuck frames back
+to 30 each, so a row that films smooth and feels smooth is the same measurement twice.
 
 `--hz` records the frames *between* ticks as well as the tick itself, and the contact sheet
 then counts **stuck frames**: consecutive drawn frames that blit the same tile at the same x/y.
@@ -147,10 +173,19 @@ if the art is missing the old vector icon still draws, so nothing can blank.
 **Final Smash (§7)** — Smash Ball spawns and floats, breaks under damage, grants an
 aura; press special for a screen-clearing super.
 
-**Stages (§9)** — 6 stages with pass-through platforms, moving platforms (a fighter — and an
+**Stages (§9)** — 16 decks with pass-through platforms, moving platforms (a fighter — and an
 item — standing on a mover rides its `p.dx/p.dy` for the tick), and hazards (lava pools, timed
 pillar) that re-arm on a 45-tick `HAZARD_REHIT` rather than billing you every frame of contact.
-Battlefield- and Final-Destination-style layouts included.
+Ten of them are the Super Smash Bros. Ultimate *templates* copied as geometry: the Battlefield
+form (flat deck, two soft platforms to the sides, one high in the middle, one low over the
+centre), its Big and Small sizes, the Final Destination / Ω form (the same deck with the soft
+platforms deleted), and the tournament layouts — Pokémon Stadium 2, Town & City, Smashville,
+Yoshi's Story, Lylat Cruise, Kalos Pokémon League.  `tools/simtest.js`'s `decks:` test checks
+each one against the form its `sub` claims, so a layout cannot drift away from the name it is
+sold under.  What is deliberately *not* copied: damage hazards on the flat decks, Town & City's
+rising road segments, Smashville's rotating deck, the League's platforms that fall away — the
+platform model has no `oneWayDrop`, and inventing one under a "give me maps" request is how a
+deck acquires a new way to fall out of the world.
 
 **Modes (§11)** — VS (stock / time / stamina), team battles with friendly-fire toggle,
 4-player free-for-all, Classic Mode (5-stage gauntlet with boss), Break the Targets,

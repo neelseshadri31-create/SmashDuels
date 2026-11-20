@@ -142,6 +142,15 @@ const Sprites = (() => {
   let BLEND = 0;
   function setBlend(a) { BLEND = a > 0 && a < 1 ? a : 0; }
 
+  /* Cross-cell dissolve (see pickAnim's `mix`).  On by default; `Sprites.setSmooth(0)`
+     turns it off and puts the hard cell cuts back, which is the look a pixel-art
+     purist may prefer, and it is the switch to flip if a ghosting ever looks wrong.
+     SMOOTH_K is how far the dissolve goes before the next tile simply takes over:
+     0.8 leaves a 20% trace of the old pose rather than a hard hand-off. */
+  let SMOOTH = true;
+  const SMOOTH_K = 0.8;
+  function setSmooth(on) { SMOOTH = !!on; }
+
   /* One clock per fighter, keyed on the row being played: switching rows restarts
      it, staying on a row advances it at most once per game tick.  Held in a
      WeakMap so nothing about it leaks into save data or the fighter's own state. */
@@ -177,68 +186,63 @@ const Sprites = (() => {
 
   /* ---------------- sub-tick render blend ----------------
    *
-   * The mirror half of setBlend: positions, not poses.  The simulation has already
-   * run to the top of the tick by the time the frame is drawn, and `alpha` says how
-   * much of the *next* tick the panel will wait for — so each moving thing is drawn
-   * where the tick it is on is heading, and the camera leads by the same fraction.
-   * Interpolating backwards instead (the usual fixed-step recipe) puts the drawn
-   * frame a tick behind and, because the frame right after a step has alpha 0, saw
-   * the sprite one frame forward, one frame back: 116 of 240 frames moved backwards
-   * on a 120 Hz panel, which is a far worse stutter than the duplicated frames it
-   * was meant to fix.
+   * The mirror half of setBlend: positions, not poses.  setBlend moves the continuous
+   * parts of a pose between two ticks; this moves the body itself, and the camera, so a
+   * panel faster than 60 Hz gets a new frame instead of the same tick twice.
    *
-   * LEAD_CAP keeps a prediction honest: a launched fighter carrying 18px a tick
-   * would otherwise be drawn a visible jump past where the engine will actually put
-   * it, and an impact is the last moment you want the sprite to lie about.  Run
-   * speeds (2.4-6px/tick) sit inside the cap, so the smoothing is exact where it
-   * matters.  A fighter in hitlag is frozen and skipped entirely.
+   * What the frame is drawn at, and why it is a lead and not a lerp: Game.loop steps
+   * the simulation *before* it draws, so `alpha` is the time already spent waiting for
+   * the NEXT tick, not the fraction of a tick left over from the last one.  The tick is
+   * therefore the freshest thing the engine knows, and the correct position is that plus
+   * how far the body will travel before the panel answers.  Interpolating backwards
+   * instead (px + alpha*d, the textbook fixed-step recipe) is only right for a loop that
+   * draws before it steps — here it put every blended frame half a tick behind the frame
+   * before it, and since the short-circuit at alpha = 0 draws the raw tick, a 120 Hz panel
+   * saw the sprite jump forward on the step and slide back on the frame after it:
+   * 117 of 240 frames moving backwards.  Measured, not theorised — tools/animtest.js
+   * asserts on the blit matrix precisely so this cannot silently flip back.
+   *
+   * What is left of the old `LEAD_CAP` is the honesty bound: a body may only be led by
+   * as much as it actually travelled last tick, which stops a wall, a grab or a body
+   * scrubbing itself to a stop from being drawn somewhere the physics will not put it.
+   * The fixed 4px cap on top of that was the stutter — a fighter falling at 12px a tick
+   * had two thirds of its frame thrown away, then handed back on the next tick.  A
+   * velocity that just changed sign is the one case where travel is not evidence, so
+   * that gets no lead at all, and a fighter in hitlag is frozen and skipped outright.
    *
    * Returns the undo; the draw pass hands the positions straight back, so the
-   * simulation never sees a number the physics did not produce.  alpha = 0 — a 60
-   * Hz panel, where there is nothing between the ticks to guess — is a no-op. */
-  const LEAD_CAP = 4;
-  const MEMO = new WeakMap();     // entity -> velocity as of the tick it was last drawn on
+   * simulation never sees a number the physics did not produce.  alpha = 0 — a 60 Hz
+   * panel, where there is nothing between the ticks to guess — is a no-op. */
+  const MEMO = new WeakMap();     // entity -> where it stood on the tick it was last drawn
   function beginFrame(match, alpha) {
     setBlend(alpha);
     if (!(alpha > 0) || !match) return null;
     const moved = [];
-    /* Predict on a steady body only.  The tick a fighter gets smashed, lands or
-       jumps, its velocity is brand new, and a lead taken from the last frame's
-       velocity draws them where that old velocity was going — up to a few px the
-       engine then takes back, one frame of visible stutter for every impact.  So:
-       if the velocity jumped, draw the tick exactly and start leading again once
-       the flight is steady. */
-    const note = (e) => {
-      const JUMP = 1.25;                                   // px/tick that counts as an impulse
+    /* How far this body actually moved on the tick that just ran, measured once per
+       tick (keyed on animT, so a doubled-up catch-up frame still only samples once). */
+    const travelled = (e) => {
       const tick = e.animT | 0;
       let m = MEMO.get(e);
-      if (!m) { m = { t: -1, bad: false, px: e.x, py: e.y }; MEMO.set(e, m); }
-      if (m.t !== tick) {
-        m.bad = m.vx !== undefined
-          && (Math.abs(e.vx - m.vx) > JUMP || Math.abs(e.vy - m.vy) > JUMP);
-        m.t = tick; m.vx = e.vx; m.vy = e.vy;
-        const ddx = e.x - m.px, ddy = e.y - m.py;
-        m.px = e.x; m.py = e.y; m.dx = ddx; m.dy = ddy;
-      }
+      if (!m) { m = { t: -1 }; MEMO.set(e, m); }
+      if (m.t === tick) return m;
+      m.t = tick;
+      const dx = m.px === undefined ? 0 : e.x - m.px;
+      const dy = m.py === undefined ? 0 : e.y - m.py;
+      m.px = e.x; m.py = e.y; m.dx = dx; m.dy = dy;
       return m;
     };
-    const step = (e, vx, vy, predict) => {
+    const step = (e, vx, vy, bound) => {
       if (!e || e.hitlag > 0) return;                     // a frozen fighter is not moving
       if (!Number.isFinite(vx) || !Number.isFinite(vy) || (!vx && !vy)) return;
-      let k = alpha, mx = LEAD_CAP, my = LEAD_CAP;
-      if (predict) {
-        const m = note(e);
-        if (m.bad) return;                                 // impulse: the sim's own frame, unedited
-        /* Never lead by more than the body actually just travelled.  A fighter
-           being scrubbed to a stop, or pushed against a wall, still has velocity the
-           tick before it stops — and drawing that velocity forward is a promise the
-           next tick takes back, which is a hitch, not a smoothing. */
-        if (vx * m.dx < 0) m.dx = 0;
-        if (vy * m.dy < 0) m.dy = 0;
-        mx = Math.max(Math.abs(m.dx), 0.5); my = Math.max(Math.abs(m.dy), 0.5);
+      let mx = Infinity, my = Infinity;
+      if (bound) {
+        const m = travelled(e);
+        // a body that just reversed is not going where its velocity says
+        mx = vx * m.dx < 0 ? 0 : Math.abs(m.dx);
+        my = vy * m.dy < 0 ? 0 : Math.abs(m.dy);
       }
-      const dx = clamp(vx * k, -Math.min(mx, LEAD_CAP), Math.min(mx, LEAD_CAP));
-      const dy = clamp(vy * k, -Math.min(my, LEAD_CAP), Math.min(my, LEAD_CAP));
+      const dx = clamp(vx * alpha, -mx, mx);
+      const dy = clamp(vy * alpha, -my, my);
       if (!dx && !dy) return;
       moved.push(e, e.x, e.y);
       e.x += dx; e.y += dy;
@@ -247,6 +251,7 @@ const Sprites = (() => {
     for (const it of match.items) if (!it.heldBy) step(it, it.vx, it.vy);
     for (const pr of match.projectiles) step(pr, pr.vx, pr.vy);
     for (const su of (match.summons || [])) step(su, su.vx || 0, su.vy || 0);
+    if (match.bag) step(match.bag, match.bag.vx || 0, match.bag.vy || 0);
     const cam = match.cam;
     let c = null;
     if (cam && Number.isFinite(cam.px)) {
@@ -786,7 +791,21 @@ const Sprites = (() => {
       if (spec.pulse) wob = Math.sin(c.t * 0.085) * spec.pulse;
     }
     const prog = spec.stride ? c.p : c.t / Math.max(1, spec.step || DEFAULT_STEP);
-    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, clock: c.t, swing,
+    /* Smooth transitions between sprite cells.  A loop row is a handful of tiles and
+       the clock lands on whole ones, so the pose holds for 4-6 ticks and then changes
+       instantly — with 8-frame rows now on every sheet, that hold is the only thing
+       left that reads as stepping.  `mix` says how far into the current tile this frame
+       sits and which tile follows it, so the draw can dissolve one into the other over
+       the back half of the hold: the pose stays crisp for the first half of its life
+       (that is what makes a frame readable) and is never 50/50 with its neighbour.
+       Loops only.  A strike tile IS the hit window, and fading it into the
+       follow-through is how you get a fighter that visually whiffs a connected move. */
+    let mix = null;
+    if (!phase && n > 2 && !spec.once && !spec.hold && !spec.fit && SMOOTH) {
+      const fr = prog - Math.floor(prog);
+      if (fr > 0.5) mix = { j: (i + 1) % n, f: SMOOTH_K * (fr - 0.5) / 0.5 };
+    }
+    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, clock: c.t, swing, mix,
       vfx: phase ? vfxGate(f) : 1,
       phase: phase || undefined };
   }
@@ -1402,7 +1421,19 @@ const Sprites = (() => {
     const stx = sw && sw.sx ? sw.sx : 1;
     ctx.scale(dir * squash * stx * s, (2 - squash) / stx * s);
     if (lean) ctx.rotate(lean * dir);
-    blit(ctx, at, src, ent, false, sel.vfx);
+    if (sel.mix && sel.frames[sel.mix.j]) {
+      /* Two cells of the same row, one dissolve: the ink fades across, the baked glow
+         keeps burning at full strength underneath it (see blit's `only`). */
+      const pa = ctx.globalAlpha;
+      ctx.globalAlpha = pa * (1 - sel.mix.f);
+      blit(ctx, at, src, ent, false, 0, 'body');
+      ctx.globalAlpha = pa * sel.mix.f;
+      blit(ctx, at, src, sel.frames[sel.mix.j], false, 0, 'body');
+      ctx.globalAlpha = pa;
+      blit(ctx, at, src, ent, false, sel.vfx, 'vfx');
+    } else {
+      blit(ctx, at, src, ent, false, sel.vfx);
+    }
     ctx.restore();                    // also drops the metal filter
 
     // ---- shield bubble: a readable dome, not a sprite-wide glow (a big
@@ -1438,15 +1469,19 @@ const Sprites = (() => {
   }
 
   /* Body tile first, then any baked VFX additively so crescents glow. */
-  function blit(ctx, at, src, ent, flashPass, vfx) {
+  /* `only` picks a layer: 'body' for the ink alone, 'vfx' for the baked glow, and
+     nothing for both.  A cross-dissolve between two cells of a row needs it — the ink
+     is what should fade, while the glow is light and is already composited 'lighter',
+     so fading it with the tile makes a gauntlet wink on and off mid-stride. */
+  function blit(ctx, at, src, ent, flashPass, vfx, only) {
     const draw = (part) => {
       const t = at.tiles[part[0]];
       if (!t) return;
       ctx.drawImage(src, t.x, t.y, t.w, t.h, -part[1], -part[2], t.w, t.h);
     };
-    draw(ent);
+    if (only !== 'vfx') draw(ent);
     const fx = ent[3] || [];
-    if (!fx.length) return;
+    if (!fx.length || only === 'body') return;
     const k = vfx === undefined ? 1 : clamp(vfx, 0, 1);
     if (k <= 0.02) return;                  // not yet: the body alone is the pose
     const prev = ctx.globalCompositeOperation, pa = ctx.globalAlpha;
@@ -1460,7 +1495,7 @@ const Sprites = (() => {
   return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
     atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
     loadItems, itemArt, ITEM_ART,
-    setBlend, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
+    setBlend, setSmooth, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 
 /* ============================================================
@@ -1629,6 +1664,90 @@ const Backdrop = (() => {
         ctx.fillStyle = withAlpha('#22e08a', 0.35);
         ctx.fillRect(bx + 105, -300, 30, 16);
       }
+    } else if (theme === 'island') {
+      /* The Battlefield decks: a floating slab in open sky, so the background is the
+         thing that says "arena" — a wide horizon of cloud below the stage and one
+         large distant planet, both of which the camera parallaxes slowly past. */
+      ctx.globalAlpha = 0.5;
+      const pgx = -520 + par(0.05), pgy = -560;
+      const pr = 210;
+      const pg = ctx.createRadialGradient(pgx - pr * 0.3, pgy - pr * 0.35, pr * 0.2, pgx, pgy, pr);
+      pg.addColorStop(0, withAlpha(stage.accent, 0.5));
+      pg.addColorStop(0.7, withAlpha(stage.accent, 0.14));
+      pg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(pgx, pgy, pr, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 0.24;
+      ctx.strokeStyle = withAlpha('#ffffff', 0.5); ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(pgx, pgy + 20, pr * 1.5, pr * 0.32, -0.32, 0, TAU); ctx.stroke();
+      // cloud sea under the deck
+      for (let i = 0; i < 9; i++) {
+        const bx = -1500 + i * 380 + par(0.07);
+        const by = 300 + hash(i) * 90;
+        ctx.globalAlpha = 0.10 + hash(i + 5) * 0.16;
+        ctx.fillStyle = '#dcecff';
+        ctx.beginPath(); ctx.ellipse(bx, by, 240 + hash(i) * 120, 34 + hash(i + 2) * 20, 0, 0, TAU); ctx.fill();
+      }
+    } else if (theme === 'arena') {
+      /* The stadium bowl: floodlights and a terraced crowd, drawn as bands of dots so
+         it reads as a crowd rather than noise, and moves at a tenth of the camera. */
+      ctx.globalAlpha = 0.5;
+      for (let i = 0; i < 7; i++) {
+        const bx = -1400 + i * 470 + par(0.09);
+        ctx.fillStyle = withAlpha('#0d1a24', 0.9);
+        ctx.fillRect(bx, -240, 26, 420);
+        ctx.fillStyle = withAlpha(stage.accent, 0.5);
+        ctx.fillRect(bx - 30, -250, 86, 18);
+        ctx.globalAlpha = 0.16;
+        const lg = ctx.createRadialGradient(bx, -230, 10, bx, -230, 420);
+        lg.addColorStop(0, withAlpha(stage.accent, 0.4)); lg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = lg; ctx.fillRect(bx - 400, -240, 800, 600);
+        ctx.globalAlpha = 0.5;
+      }
+      for (let band = 0; band < 4; band++) {
+        const by = -120 + band * 62;
+        for (let i = 0; i < 46; i++) {
+          const bx = -1420 + i * 64 + par(0.12 + band * 0.01) + (band % 2) * 22;
+          ctx.globalAlpha = 0.14 + hash(i * 7 + band) * 0.3;
+          ctx.fillStyle = hash(i + band * 13) > 0.72 ? stage.accent : '#8ea6bd';
+          ctx.fillRect(bx, by + Math.sin(i * 1.7 + band) * 4, 5, 5);
+        }
+      }
+    } else if (theme === 'city') {
+      /* Town & City: two skylines at different depths and the street itself, with a
+         car running along it.  The traffic is scenery here, not a hazard — the deck it
+         drives on is where the fighters are standing, so nothing on it can damage them
+         without becoming a stage gimmick the platform physics has no room for. */
+      for (let layer = 0; layer < 2; layer++) {
+        const k = layer ? 0.16 : 0.09;
+        ctx.globalAlpha = layer ? 0.55 : 0.32;
+        for (let i = 0; i < 14; i++) {
+          const bw = 90 + hash(i * 3 + layer) * 90;
+          const bx = -1500 + i * 226 + hash(i + layer * 7) * 60 + par(k);
+          const bh = 220 + hash(i * 5 + layer) * 420;
+          ctx.fillStyle = layer ? '#182437' : '#111a2a';
+          ctx.fillRect(bx, -bh, bw, bh + 260);
+          ctx.fillStyle = withAlpha('#ffd166', layer ? 0.5 : 0.25);
+          for (let wy = 0; wy < 9; wy++) {
+            for (let wx2 = 0; wx2 < 3; wx2++) {
+              if (hash(i * 31 + wy * 7 + wx2 + layer * 3) > 0.62) ctx.fillRect(bx + 12 + wx2 * 26, -bh + 26 + wy * 44, 12, 16);
+            }
+          }
+        }
+      }
+      // the street, and something driving along it
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = '#1a2230';
+      ctx.fillRect(-1600, 150, 3200, 120);
+      ctx.fillStyle = withAlpha('#ffd166', 0.5);
+      for (let i = 0; i < 22; i++) ctx.fillRect(-1500 + i * 150 + ((time * 0.9) % 150), 206, 46, 5);
+      const carX = ((time * 1.5) % 3600) - 1700;
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = '#e8556d';
+      ctx.fillRect(carX, 176, 82, 26);
+      ctx.fillRect(carX + 16, 162, 44, 18);
+      ctx.fillStyle = withAlpha('#fff6c8', 0.9);
+      ctx.fillRect(carX + 76, 182, 10, 6);
     }
     ctx.restore();
 

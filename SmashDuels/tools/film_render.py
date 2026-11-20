@@ -74,7 +74,16 @@ def blit(dst, atlas, op, ox, oy):
     ac = kx * (-(d * ex - c * ey) / det - op['dx']) + op['sx']
     dd, de = -ky * b / det, ky * a / det
     df = ky * ((b * ex - a * ey) / det - op['dy']) + op['sy']
-    layer = atlas.transform(dst.size, Image.AFFINE, (aa, ab, ac, dd, de, df), resample=NEAREST)
+    # Source rect, clipped.  PIL's AFFINE transform samples the whole image it is given,
+    # and an atlas is a jigsaw of *adjacent opaque art*: without this, a 4x4 dust speck
+    # blown up 3x smears the flame row packed next to it across the cell, and the contact
+    # sheet shows an inferno where the game draws one pixel.  A real canvas clips to
+    # (sx, sy, sw, sh) inside drawImage; so must this.
+    sx, sy = op['sx'], op['sy']
+    win = Image.new('RGBA', atlas.size, (0, 0, 0, 0))
+    crop = atlas.crop((sx, sy, sx + sw, sy + sh))
+    win.paste(crop if crop.mode == 'RGBA' else crop.convert('RGBA'), (sx, sy))
+    layer = win.transform(dst.size, Image.AFFINE, (aa, ab, ac, dd, de, df), resample=NEAREST)
     al = max(0.0, min(1.0, op.get('a', 1)))
     if al < 1.0:
         r, g, bch, a2 = layer.split()

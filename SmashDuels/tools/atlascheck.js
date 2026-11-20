@@ -447,6 +447,78 @@ test('build: every subresource index.html loads is versioned to the current buil
   }
 });
 
+/* ---------------- decks ---------------- */
+/* The harness ctx paints with noops, so a NaN in a background shape would sail through
+   untouched and only throw in the browser.  Watching the numeric arguments of every
+   drawing call is what makes a per-deck render test mean something — and it is the
+   guard the copied Ultimate decks needed, whose backdrops are new geometry. */
+function watchOps(ctx) {
+  const bad = [];
+  const METHODS = ['fillRect', 'strokeRect', 'clearRect', 'drawImage', 'arc', 'arcTo', 'ellipse',
+    'rect', 'roundRect', 'moveTo', 'lineTo', 'quadraticCurveTo', 'bezierCurveTo', 'fillText', 'strokeText'];
+  for (const k of METHODS) {
+    const orig = ctx[k];
+    if (typeof orig !== 'function') continue;
+    ctx[k] = function (...a) {
+      for (let i = 0; i < a.length; i++) {
+        if (typeof a[i] === 'number' && !Number.isFinite(a[i])) { bad.push(`${k} arg ${i} = ${a[i]}`); break; }
+      }
+      return orig.apply(this, a);
+    };
+  }
+  for (const k of ['createLinearGradient', 'createRadialGradient']) {
+    const orig = ctx[k];
+    if (typeof orig !== 'function') continue;
+    ctx[k] = function (...a) {
+      // a real canvas throws on a NaN or negative radius; the stub would just build it
+      for (const v of a) if (!Number.isFinite(v)) { bad.push(`${k} arg = ${v}`); break; }
+      if (k === 'createRadialGradient' && (a[2] < 0 || a[5] < 0)) bad.push(`${k} negative radius`);
+      return orig.apply(this, a);
+    };
+  }
+  return bad;
+}
+
+test('decks: every stage exists, and every backdrop theme paints without a bad number', () => {
+  return bootRoster().then(() => {
+    const h = boot({ render: true, record: true });
+    h.g.Sprites.load();
+    return h.settle(12).then(() => {
+      const { STAGES, Backdrop } = h.g;
+      const keys = Object.keys(STAGES);
+      assert(keys.length >= 16, `only ${keys.length} decks — the copied Ultimate forms should be in the picker`);
+      const rec = { ops: [] };
+      const ctx = makeCtx(rec);
+      const bad = watchOps(ctx);
+      const themes = new Set();
+      for (const k of keys) {
+        themes.add(STAGES[k].theme);
+        const m = newMatch(h.ctx, cast(5, KEYS, { cpu: false }), k, { state: 'play' });
+        m.readPlayerInput = (f) => f.__raw || {};      // no keyboard is bound in a headless run
+        for (let i = 0; i < 6; i++) {
+          m.cam.x = -600 + i * 260; m.cam.y = -320 + i * 90; m.cam.zoom = 0.6 + i * 0.1;
+          m.update();
+          rec.ops.length = 0;
+          Backdrop.draw(ctx, m.stage, m.cam, m.time);
+        }
+      }
+      assert(!bad.length, `${bad.length} bad drawing arguments: ${bad.slice(0, 6).join(' | ')}`);
+      const missing = keys.filter(k => !themes.has(STAGES[k].theme));
+      assert(!missing.length, 'unthemed decks: ' + missing.join(','));
+      // each deck must actually paint something (an empty backdrop is a silent regression)
+      for (const k of keys) {
+        const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), k, { state: 'play' });
+        m.readPlayerInput = (f) => f.__raw || {};
+        rec.ops.length = 0;
+        Backdrop.draw(ctx, m.stage, m.cam, 1000);
+        const painted = rec.ops.filter(o => o.op === 'set' || o.op === 'drawImage').length;
+        assert(painted > 4, `${k}: its backdrop painted ${painted} state changes — that is a theme nobody drew`);
+      }
+      console.log(`        (${keys.length} decks, ${themes.size} backdrop themes)`);
+    });
+  });
+});
+
 /* ---------------- entry ---------------- */
 (async () => {
   const fail = await T.run(process.argv[2]);

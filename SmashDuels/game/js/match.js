@@ -37,12 +37,18 @@ class Camera {
       w = Math.max(w, gd.w * 0.92 + 240);
       h = Math.max(h, 640);
     }
+    this.tx = cx; this.ty = cy;
     let z = Math.min(this.W / w, this.H / h);
     z = clamp(z, 0.42, 1.06);
-    this.tx = cx; this.ty = cy; this.tz = z;
+    /* A camera that re-derives its scale every tick breathes: one fighter sprinting
+       5px a tick widens the frame, the whole scene rescales by ~1%, and the stage
+       visibly pulses under everybody's feet.  That is a second source of "stuttery"
+       on top of the sprite, and it is worst exactly when someone is running.  So only
+       retarget once the framing has genuinely moved, then ease into it. */
+    if (Math.abs(z - this.tz) > this.tz * 0.03) this.tz = z;
     this.x = lerp(this.x, this.tx, 0.075 * dt);
     this.y = lerp(this.y, this.ty, 0.075 * dt);
-    this.zoom = lerp(this.zoom, this.tz, 0.055 * dt);
+    this.zoom = lerp(this.zoom, this.tz, 0.045 * dt);
     if (this.shakeT > 0) {
       this.shakeT -= dt;
       const a = this.shakeAmt * (this.shakeT / 12);
@@ -545,6 +551,11 @@ class Match {
     this.triggerChallenge('damage', target);
   }
 
+  /* Blocking spent shield HP and gave stun, and nothing else happened: `damage` was
+     never touched.  A dash attack into a held shield therefore produced every piece of
+     feedback that says "I hit them" — spark, ring, hitlag on both fighters, a shrivelling
+     shield gauge — with a percent that did not move by a single point, which reads as a
+     move that cannot hit.  The chip below is what makes the two agree. */
   shieldHit(attacker, target, dmg, box) {
     target.shieldHP -= dmg * 1.35;
     target.shieldStun = Math.floor(dmg * 0.8) + 4;
@@ -553,7 +564,16 @@ class Match {
     target.hitlag = 4;
     this.fx.ring(target.x, target.y - 50 * target.scale, target.pal.accent, 44, 12);
     AUDIO.sfx('shieldHit');
-    if (target.shieldHP <= 0) target.shieldBreak(this);
+    if (target.shieldHP <= 0) { target.shieldBreak(this); return; }
+    // chip through the guard, so a blocked hit is still a hit
+    const chip = Math.max(SHIELD.chipMin, Math.round(dmg * SHIELD.chip * (this.rules.damageRatio || 1)));
+    if (chip > 0) {
+      target.damage += chip;
+      target.lastHitBy = attacker || null;
+      if (attacker) attacker.comboTimer = 60;
+      this.fx.text(target.x, target.y - 118 * target.scale, String(chip), withAlpha(target.pal.accent, 0.9));
+      this.triggerChallenge('damage', target);
+    }
   }
 
   aoeHit(attacker, x, y, radius, dmg, bkb, kbs, angle, o = {}) {
