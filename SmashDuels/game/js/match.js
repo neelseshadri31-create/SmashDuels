@@ -248,6 +248,16 @@ class Match {
       const t = f.grabbing;
       if (t && (t.eliminated || t.grabbedBy !== f)) { f.grabbing = null; if (t) t.grabbedBy = null; }
       if (t) t.hitstun = 0;
+      /* The other direction, which used to have no check at all: if the *grabber*
+         goes away — KO'd mid-hold, eliminated, reset for a respawn — the victim is
+         left pointing at nobody. `grabbed` is a state that owns the body (it pins
+         the position and returns before physics), so a dangling link freezes the
+         fighter in mid-air at whatever height they were at, permanently. 4-player is
+         where it showed up: someone always dies while holding someone. */
+      if (f.grabbedBy && f.grabbedBy.grabbing !== f) {
+        f.grabbedBy = null;
+        if (f.state === 'grabbed') { f.state = f.onGround ? 'idle' : 'fall'; f.hitstun = 0; }
+      }
     }
     if (this.state === 'intro') {
       this.stateT++;
@@ -484,16 +494,24 @@ class Match {
     angle += diDir * 5;
     const ar = angle * Math.PI / 180;
 
-    target.hitstun = Math.floor(kb * 0.62) + 8;
+    /* A pummel is damage delivered *inside* a grab, so it must not do what a hit
+       otherwise does to the victim: fly away, lose the grab, sit in hitstun.
+       `Match.pummel` passed `pummel/noLaunch` for exactly that and nothing here read
+       the flag, so grabbing and pressing attack popped the victim into the air and
+       released both of them on the very first jab — pummelling did not exist. */
+    const held = !!(o.pummel || o.noLaunch);
+    target.hitstun = held ? 0 : Math.floor(kb * 0.62) + 8;
     target.hitT = 0;
-    target.vx = Math.cos(ar) * kb;
-    target.vy = -Math.sin(ar) * kb * 0.92;
-    if (target.onGround && target.vy > 0) target.vy = -Math.abs(target.vy) * 0.5;
-    target.onGround = false; target.onPlatform = null;
-    target.state = 'launch';
-    target.ledge = null;
-    target.shieldHP = 0; target.shielding = false;
-    target.grabbing = null; target.grabbedBy = null;
+    if (!held) {
+      target.vx = Math.cos(ar) * kb;
+      target.vy = -Math.sin(ar) * kb * 0.92;
+      if (target.onGround && target.vy > 0) target.vy = -Math.abs(target.vy) * 0.5;
+      target.onGround = false; target.onPlatform = null;
+      target.state = 'launch';
+      target.ledge = null;
+      target.shieldHP = 0; target.shielding = false;
+      target.grabbing = null; target.grabbedBy = null;
+    }
     target.charging = false;
     target.lastHitBy = attacker || null;
     if (target.action && target.action.type !== 'move') target.action = null;

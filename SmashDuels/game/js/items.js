@@ -189,13 +189,46 @@ class Item {
     this.cooldown = 0;
   }
   get box() { return { x: this.x - 15, y: this.y - 15, w: 30, h: 30 }; }
+  /* The holder's hand, in world space.
+     This used to be a flat `22px out, 62px up` — which is about right for one fighter
+     and wrong for the rest, since the offset never followed scale. Deriving it from the
+     holder's own hurtbox puts a sword at knuckle height on a 132px giant as well as on
+     a 108px one, which is most of what "sits properly in the hand" means. */
+  handPoint(f) {
+    // The hurtbox is already scale-corrected by the fighter, so it must not be
+    // multiplied by f.scale again here — doing that put Grim's sword at the top of
+    // his head instead of his hand, because his hurtbox is 151px to everyone else's
+    // ~110.  0.60 of that height is the knuckle line for every key in the roster.
+    const hb = f.hurtbox || null;                       // a getter, and pose-dependent
+    const hw = hb ? hb.w : 44, hh = hb ? hb.h : 92;
+    return {
+      x: f.x + f.facing * (hw * 0.5 + 6),
+      y: f.y - hh * 0.60 + Math.sin((((this.match && this.match.time) || 0) + this.bobT) * 0.07) * 1.4,
+    };
+  }
+  /* An item in hand swings with the attack that is using it, and sags to the hip
+     otherwise. Without this a held Beamsword stays bolt upright through a full
+     overhead swing, which is what made held items look pasted on. */
+  heldAngle(f) {
+    const a = f.action;
+    if (a && a.kind === 'attack' && a.total > 0) {
+      const p = Math.max(0, Math.min(1, a.t / a.total));
+      return (Math.sin(p * Math.PI * 1.0) * 1.25 - 0.42) * f.facing;
+    }
+    return -0.28 * f.facing;
+  }
   update(match) {
     if (this.spawnT > 0) this.spawnT--;
     if (this.heldBy) {
       const f = this.heldBy;
-      this.x = f.x + f.facing * 22 * f.scale;
-      this.y = f.y - 62 * f.scale;
+      const hp = this.handPoint(f);
+      this.x = hp.x;
+      this.y = hp.y;
+      this.rot = this.heldAngle(f);
       this.vx = this.vy = 0;
+      // not resting on anything any more: leaving onGround set made the deck bob and
+      // the floor-following checks apply to an item in someone's hand
+      this.onGround = false; this.onPlatform = null;
       return;
     }
     this.life--;
@@ -241,15 +274,38 @@ class Item {
   draw(ctx, time) {
     const d = this.def;
     if (this.life < 180 && Math.floor(this.life / 5) % 2 === 0) return;
+    const art = typeof Sprites !== 'undefined' && Sprites.itemArt ? Sprites.itemArt(this.type) : null;
     ctx.save();
     ctx.translate(this.x, this.y + Math.sin((time + this.bobT) * 0.06) * (this.onGround ? 2 : 0));
-    // glow
+    // glow, sized to the sprite rather than to the old 20px icon
+    const gr = art ? Math.max(26, (art.w + art.h) * 0.42) : 26;
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(0, 0, 2, 0, 0, 26);
+    const g = ctx.createRadialGradient(0, art ? -2 : 0, 2, 0, 0, gr);
     g.addColorStop(0, withAlpha(d.color, 0.5)); g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 26, 0, TAU); ctx.fill(); ctx.restore();
-    if (!this.heldBy) { ctx.rotate(this.rot); }
-    drawItemIcon(ctx, this.type, d, 1);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, gr, 0, TAU); ctx.fill(); ctx.restore();
+    if (art) {
+      /* Placement, which the collision box does not describe: an item's origin is its
+         centre, but it comes to rest with its origin 8px above the deck (update() snaps
+         it to `gd.y - 8`), so a sprite drawn centred would sink half into the stage.
+         Anchoring its bottom on that line is what makes a crate look like it is *on*
+         the floor instead of stuck through it.  A held item has no floor to respect —
+         it sits on the hand point and mirrors with the holder, so a sword points the
+         way you are facing.  Everything in between spins, as it always did. */
+      if (this.heldBy) {
+        const flip = art.mirror && this.heldBy.facing < 0;
+        if (flip) ctx.scale(-1, 1);
+        ctx.rotate(this.rot * (flip ? -1 : 1));
+        ctx.drawImage(art.img, -art.w / 2, -art.h / 2, art.w, art.h);
+      } else if (this.onGround) {
+        ctx.drawImage(art.img, -art.w / 2, 8 - art.h, art.w, art.h);
+      } else {
+        ctx.rotate(this.rot);
+        ctx.drawImage(art.img, -art.w / 2, -art.h / 2, art.w, art.h);
+      }
+    } else {
+      if (!this.heldBy) { ctx.rotate(this.rot); }
+      drawItemIcon(ctx, this.type, d, 1);
+    }
     ctx.restore();
     if (this.spawnT > 0) {
       ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = this.spawnT / 40;

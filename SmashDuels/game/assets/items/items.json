@@ -1,0 +1,137 @@
+{
+ "items": {
+  "assist": {
+   "file": "assist.png",
+   "h": 48,
+   "mirror": false,
+   "w": 39
+  },
+  "beamsword": {
+   "file": "beamsword.png",
+   "h": 58,
+   "mirror": true,
+   "w": 58
+  },
+  "bobomb": {
+   "file": "bobomb.png",
+   "h": 42,
+   "mirror": true,
+   "w": 39
+  },
+  "bumper": {
+   "file": "bumper.png",
+   "h": 43,
+   "mirror": false,
+   "w": 44
+  },
+  "bunnyhood": {
+   "file": "bunnyhood.png",
+   "h": 44,
+   "mirror": false,
+   "w": 40
+  },
+  "capsule": {
+   "file": "capsule.png",
+   "h": 40,
+   "mirror": true,
+   "w": 39
+  },
+  "crate": {
+   "file": "crate.png",
+   "h": 46,
+   "mirror": true,
+   "w": 46
+  },
+  "fireflower": {
+   "file": "fireflower.png",
+   "h": 46,
+   "mirror": false,
+   "w": 33
+  },
+  "food": {
+   "file": "food.png",
+   "h": 40,
+   "mirror": true,
+   "w": 42
+  },
+  "hammer": {
+   "file": "hammer.png",
+   "h": 52,
+   "mirror": true,
+   "w": 46
+  },
+  "heart": {
+   "file": "heart.png",
+   "h": 37,
+   "mirror": true,
+   "w": 40
+  },
+  "homerunbat": {
+   "file": "homerunbat.png",
+   "h": 55,
+   "mirror": true,
+   "w": 56
+  },
+  "metalbox": {
+   "file": "metalbox.png",
+   "h": 43,
+   "mirror": true,
+   "w": 46
+  },
+  "mushroom": {
+   "file": "mushroom.png",
+   "h": 41,
+   "mirror": false,
+   "w": 44
+  },
+  "poison": {
+   "file": "poison.png",
+   "h": 43,
+   "mirror": false,
+   "w": 44
+  },
+  "raygun": {
+   "file": "raygun.png",
+   "h": 35,
+   "mirror": true,
+   "w": 46
+  },
+  "riftorb": {
+   "file": "riftorb.png",
+   "h": 42,
+   "mirror": false,
+   "w": 44
+  },
+  "shell": {
+   "file": "shell.png",
+   "h": 43,
+   "mirror": false,
+   "w": 44
+  },
+  "smashball": {
+   "file": "smashball.png",
+   "h": 44,
+   "mirror": false,
+   "w": 44
+  },
+  "star": {
+   "file": "star.png",
+   "h": 45,
+   "mirror": true,
+   "w": 46
+  },
+  "starrod": {
+   "file": "starrod.png",
+   "h": 50,
+   "mirror": true,
+   "w": 50
+  },
+  "tomato": {
+   "file": "tomato.png",
+   "h": 38,
+   "mirror": true,
+   "w": 37
+  }
+ },
+ "scale": 2
+}

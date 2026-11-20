@@ -123,6 +123,32 @@ test('atlas: one tile per distinct drawing, reused by id', () => {
     // dedup contract: no two tiles share an identical rect
     const rects = new Set(meta.tiles.map(t => `${t.x},${t.y},${t.w},${t.h}`));
     assert(rects.size === meta.tiles.length, `${key}: duplicate tile rects in the atlas (${meta.tiles.length - rects.size})`);
+    // and no two rects may overlap at all: tiles are pasted into one PNG, so an
+    // overlapping pair means one drawing was painted on top of the other, and both
+    // animations now show a piece of the wrong pose.  tools/slice_rows.py packs into
+    // whatever the roster left free, and a packer that forgets the used space does
+    // exactly this — while every other check still passes, because the geometry is fine.
+    const t2 = meta.tiles;
+    const live = new Set();
+    for (const frames of Object.values(Object.assign({}, meta.anims, meta.derived))) {
+      for (const ent of frames) {
+        live.add(ent[0]);
+        for (const fx of ent[3] || []) live.add(fx[0]);
+      }
+    }
+    const hits = [];
+    for (let i = 0; i < t2.length && hits.length < 4; i++) {
+      if (!live.has(i)) continue;
+      for (let j = i + 1; j < t2.length; j++) {
+        if (!live.has(j)) continue;
+        const a = t2[i], b = t2[j];
+        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+          hits.push(`${i}\u00b7${j}`);
+          break;
+        }
+      }
+    }
+    assert(!hits.length, `${key}: ${hits.length} tile rects overlap another tile (first: ${hits.slice(0, 4).join(', ')})`);
   }
 });
 

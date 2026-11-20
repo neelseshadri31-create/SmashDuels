@@ -622,9 +622,6 @@ const Game = (() => {
       }
     }
 
-    // items behind fighters
-    for (const it of match.items) if (it.heldBy) it.draw(ctx, match.time);
-
     // summons
     for (const s of match.summons) s.draw(ctx, match.time);
     // mines
@@ -667,6 +664,10 @@ const Game = (() => {
       // cpu tag above head (GDD §13.1 player indicator)
       if (!f.eliminated) drawNameTag(ctx, f, match);
     }
+
+    // Items in hand, after the bodies: a held sprite anchored to the knuckle line has
+    // to draw over the fighter holding it, or the sword disappears into their back.
+    for (const it of match.items) if (it.heldBy) it.draw(ctx, match.time);
 
     // projectiles & fx
     // ---- Break the Targets
@@ -899,6 +900,7 @@ window.RR = {
 
 addEventListener('DOMContentLoaded', () => {
   Sprites.load();
+  if (Sprites.loadItems) Sprites.loadItems();
   UI.boot();
   if (typeof CloudSave !== 'undefined' && CloudSave) CloudSave.boot();
   Game.init(document.getElementById('game-canvas'));

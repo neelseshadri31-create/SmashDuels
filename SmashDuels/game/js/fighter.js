@@ -21,6 +21,7 @@ const SLAB_EASE = 8;                  // px/tick the stage wall pushes an overla
 const HAZARD_REHIT = 45;              // ticks before a hazard may touch you again
 const ITEM_SWING = 24;                // ticks of recovery on a held item's swing/shot
 const GRAB_HOLD_MAX = 120;            // ticks a grab can hold an opponent, pummels included
+const LUNGE_SLIDE = 40;               // px a run attack's lunge is allowed to carry it
 const GROUNDED_ACT = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'land',
   'shield', 'fall', 'doublejump', 'helpless', 'taunt'];
 const MOVABLE = ['idle', 'walk', 'run', 'turn', 'crouch', 'air', 'jump', 'shield',
@@ -245,6 +246,21 @@ class Fighter {
       return;
     }
 
+    /* Stale hit states with no hitstun left → get up, at the top of the tick.
+       The check used to cover `launch` only, so a fighter who came out of a tumble
+       while standing on the deck stayed in `hitstun` indefinitely: the state is not
+       in the movement-lock list, but it *is* what keeps `applyPhysics` on the 0.995
+       air drag instead of ground friction and what keeps the tumble animation on
+       screen.  In a 4-player CPU match that showed up as someone lying on the floor
+       for nine seconds, sliding a third of a pixel a tick, until a stray hit or a KO
+       happened to move them on — the single most-reported shape of "the fighter is
+       stuck".  Running before the state is read (not after) is what makes it an
+       invariant rather than a repair. */
+    if ((this.state === 'launch' || this.state === 'hitstun') && this.hitstun <= 0) {
+      this.state = this.onGround ? 'idle' : 'fall';
+      this.animT = 0;
+    }
+
     if (this.flashT > 0) this.flashT--;
     if (this.invincT > 0) this.invincT--;
     if (this.respawnT > 0) { this.respawnT--; this.updateRespawn(match); return; }
@@ -306,21 +322,7 @@ class Fighter {
 
     // ---- action states that lock movement
     if (this.state === 'attack' || this.state === 'special' || this.state === 'grab' || this.state === 'grabbing' || this.state === 'spotdodge' || this.state === 'roll' || this.state === 'airdodge' || this.state === 'land') {
-      if (this.updateAction(match)) return;
-    }
-
-    /* Stale hit states with no hitstun left → get up.
-       The check used to cover `launch` only, so a fighter who came out of a tumble
-       while standing on the deck stayed in `hitstun` indefinitely: the state is not
-       in the movement-lock list, but it *is* what keeps `applyPhysics` on the 0.995
-       air drag instead of ground friction and what keeps the tumble animation on
-       screen.  In a 4-player CPU match that showed up as someone lying on the floor
-       for nine seconds, sliding a third of a pixel a tick, until a stray hit or a
-       KO happened to move them on — the single most-reported shape of "the fighter
-       is stuck". */
-    if ((this.state === 'launch' || this.state === 'hitstun') && this.hitstun <= 0) {
-      this.state = this.onGround ? 'idle' : 'fall';
-      this.animT = 0;
+      if (this.updateAction(match)) { this.stepAction(match); return; }
     }
 
     // ---- shield
@@ -612,7 +614,14 @@ class Fighter {
       AUDIO.sfx('land');
       return;
     }
-    if (this.hitstun <= 0 && this.state !== 'attack' && this.state !== 'shield' && this.state !== 'special' && this.state !== 'land') {
+    /* Landing lag belongs to aerial actions that end on the deck.  A grab in progress
+       is not one of them: since a locked action now integrates the body, the grabber
+       came down onto the deck inside their own hold and `landOn` used to replace the
+       `holding` action with `landing` — dropping the victim and starting a buffered
+       attack in the same motion. */
+    const holding = this.state === 'grab' || this.state === 'grabbing' ||
+      (this.action && (this.action.type === 'holding' || this.action.type === 'grabbing'));
+    if (this.hitstun <= 0 && !holding && this.state !== 'attack' && this.state !== 'shield' && this.state !== 'special' && this.state !== 'land') {
       this.state = 'land'; this.stateT = 0;
       this.turnT = 0; this.endDash();
       this.landLag = impact > 14 ? 9 : 4;
@@ -766,7 +775,11 @@ class Fighter {
     match.fx.swoosh(this, m.reach || 40);
     // small forward lunge for ground attacks
     if (this.onGround && (kind === 'ftilt' || kind === 'fsmash')) this.vx += this.facing * (kind === 'fsmash' ? 1.6 : 1.0);
-    if (this.onGround && kind === 'dashattack') { this.vx += this.facing * 2.6; this.dashT = 0; }
+    if (this.onGround && kind === 'dashattack') {
+      // the run attack IS a lunge: `slide` hands stepAction its travel budget
+      this.vx += this.facing * 2.6; this.dashT = 0;
+      this.action.slide = LUNGE_SLIDE; this.action.slideFrom = this.x;
+    }
   }
 
   startGrab(match) {
@@ -843,6 +856,35 @@ class Fighter {
     if (inp.upP && this.onGround && !this.held && this.state === 'idle') {
       // up-tap is a jump by default; taunt assigned to holding down+shield? keep jump priority
     }
+  }
+
+  /* A locked action still moves the body.
+     `updateAction` owns the *velocity* — the dash-attack lunge, the roll arc, the
+     landing drag — and then the tick used to end there: nothing integrated it.  A
+     dash attack out of a run therefore stopped the fighter dead for the whole move
+     and handed the same velocity back when it ended, so Grim's Freight Train
+     travelled 0px across its 32 frames, its hitbox never reached the man standing in
+     front of him, and the move read as simply broken; rolls did not roll and an
+     aerial hung at the apex of its jump.  Only travel is granted here — the input
+     stays locked, and `applyPhysics` still owns support, stage collision and
+     platforms, so a lunge that runs out of deck cannot hover on a stale `onGround`. */
+  stepAction(match) {
+    const st = this.def.stats, a = this.action;
+    if (a && a.slide) {
+      /* A move with a travel budget keeps the speed it was granted until it has
+         covered that distance — the dash attack's lunge, a rush special's authored
+         `dist` — and then it settles, so the move reads as a commit rather than a
+         slide clean across the stage. */
+      if (a.slideFrom === undefined) a.slideFrom = this.x;
+      if (Math.abs(this.x - a.slideFrom) >= a.slide) this.vx = approach(this.vx, 0, st.traction * 2.4);
+    } else if (this.onGround) {
+      this.vx = approach(this.vx, 0, st.traction * (a && a.type === 'special' ? 1.1 : 1.8));
+    } else if (a && a.type === 'special') {
+      // the same rush off the deck, when it has no budget of its own
+      this.vx = approach(this.vx, sign(this.vx) * st.air, 0.55);
+    }
+    this.applyPhysics(match);
+    this.checkBlast(match);
   }
 
   updateAction(match) {
@@ -979,6 +1021,8 @@ class Fighter {
       case 's': {
         if (sp.type === 'dash' && t >= sp.startup && !s.dashFired) { s.dashFired = true;
           this.vx = this.facing * 12; this.vy = sp.float ? -1.4 : 0;
+          // the rush is now allowed to actually go somewhere: `dist` is its budget
+          this.action.slide = sp.dist || 150; this.action.slideFrom = this.x;
           this.invincT = Math.max(this.invincT, 6);
           AUDIO.sfx('dodge');
           match.fx.speedLines(this);

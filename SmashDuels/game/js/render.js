@@ -19,6 +19,7 @@ const Sprites = (() => {
      ============================================================ */
   const KEYS = ['valor', 'grim', 'astra', 'vesper', 'rook'];
   const A = {};                     // key -> {img, meta, tiles, anims, scale}
+  const ITEM_ART = {};              // item key -> {img, w, h, mirror} | false
   const VARIANTS = [
     { hue: 0,   alpha: 0.00, light: 0.00 },  // default palette (sheet art)
     { hue: 200, alpha: 0.24, light: 0.05 },  // blue
@@ -112,10 +113,14 @@ const Sprites = (() => {
      `stilt` is the shared side-swing row the slicer recovers as one sequence. */
   const MOVE_ANIM = {
     jab: 'jab', ftilt: 'stilt', utilt: 'utilt', dtilt: 'dtilt',
-    dashattack: 'stilt', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
+    dashattack: 'dashattack', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
     nair: 'nair', fair: 'fair', bair: 'bair', uair: 'uair', dair: 'dair',
   };
   const SPECIAL_ANIM = { n: 'nspecial', s: 'sspecial', u: 'uspecial', d: 'dspecial' };
+  /* A fighter whose atlas has not had the row injected still animates: rows added by
+     tools/slice_rows.py are optional, and these are what they replace.  Without this a
+     missing `dashattack` row would drop the whole move onto the idle cycle. */
+  const ROW_ALT = { dashattack: 'stilt' };
   const DEFAULT_STEP = 6;
   const STALL_PX = 0.45;          // px/tick below which a stride is not happening
   const TAU2 = Math.PI * 2;
@@ -422,6 +427,42 @@ const Sprites = (() => {
 
   function atlas(key) { return A[key] || null; }
 
+  /* ---------------- item art ----------------
+     Items used to be drawn as a switch of fillRects — a "sword" was a 4px pale bar.
+     That reads as a placeholder at 40px, and it is why an item on the deck is hard
+     to identify at a glance. The sprites in `assets/items/` are real drawings (built
+     by tools/slice_items.py from the generated sheets), and the manifest carries the
+     size each one is drawn at, so the art can be anchored by the renderer rather than
+     guessed at by whoever wrote the icon.
+
+     `false` means "loaded and missing" — items.js keeps the vector icon for those, so
+     a partial or absent art directory degrades instead of blanking. */
+  function loadItems() {
+    if (typeof fetch !== 'function' || typeof Image !== 'function') return;
+    fetch('assets/items/items.json')
+      .then((r) => (r && r.ok ? r.json() : Promise.reject(new Error('no item manifest'))))
+      .then((man) => {
+        const items = (man && man.items) || {};
+        const scale = man && man.scale ? man.scale : 2;
+        for (const k in items) {
+          const rec = items[k];
+          const entry = ITEM_ART[k] = { img: null, w: rec.w, h: rec.h, mirror: !!rec.mirror, want: (rec.w * scale) | 0 };
+          const img = new Image();
+          img.onload = () => { entry.img = img; };
+          img.onerror = () => { ITEM_ART[k] = false; };
+          img.src = `assets/items/${rec.file}`;
+        }
+      })
+      .catch(() => { ITEM_ART.__failed = true; });
+  }
+
+  /* The sprite for an item key once it is on screen, or null to fall back. */
+  function itemArt(key) {
+    const e = ITEM_ART[key];
+    if (!e || !e.img) return null;
+    return e;
+  }
+
   /* ---------------- art-derived geometry ----------------
      The slicer crops every tile tight to its ink, so a tile's rectangle *is*
      the silhouette of that drawing: no extra measurement pass is needed, and
@@ -447,7 +488,22 @@ const Sprites = (() => {
     [/^d/, [1, 1]],                      // dtilt / dsmash / dair / dspecial
     [/^n/, [2, 0]],                      // nair / nspecial: both sides count
   ];
+  /* The rows the engine ships are named outright, and the prefix table above is only
+     the fallback.  It has to be, because `dashattack` starts with the same letter the
+     tilts and smashes use for "down": a prefix match turned a forward lunge into a
+     downward blow, so the box grew at the feet while the drawn fist stayed unhit.  The
+     dash attack used to borrow the `stilt` row, which hid that; giving it its own art
+     is what made the two disagree out loud. */
+  const ROW_DIR_NAMED = {
+    jab: [0, 1], ftilt: [0, 1], stilt: [0, 1], dtilt: [1, 1], utilt: [1, -1],
+    dashattack: [0, 1], dash: [0, 1], fsmash: [0, 1], ssmash: [0, 1], usmash: [1, -1],
+    dsmash: [1, 1], nair: [2, 0], fair: [0, 1], bair: [0, -1], uair: [1, -1],
+    dair: [1, 1], nspecial: [2, 0], sspecial: [0, 1], uspecial: [1, -1], dspecial: [1, 1],
+    spotdodge: [0, 1], rollfwd: [0, 1], rollback: [0, -1], airdodge: [0, 1],
+  };
   function rowDir(name) {
+    const n = ROW_DIR_NAMED[name];
+    if (n) return n;
     for (const [re, d] of ROW_DIR) if (re.test(name)) return d;
     return [0, 1];                       // forward: jab, tilts, smashes, fair, dash
   }
@@ -697,6 +753,10 @@ const Sprites = (() => {
     if (f.stunT > 120 && f.shieldHP <= 0) { name = 'shieldbreak'; spec = STATE_ANIM.shieldbreak; }
     if (f.state === 'stun') { name = 'hurt'; spec = STATE_ANIM.stun; }
     let frames = at.anims[name];
+    if ((!frames || !frames.length) && ROW_ALT[name]) {
+      name = ROW_ALT[name];
+      frames = at.anims[name];
+    }
     if ((!frames || !frames.length) && spec && spec.fallback) {
       const alt = at.anims[spec.fallback];
       if (alt && alt.length) frames = alt;
@@ -1318,8 +1378,13 @@ const Sprites = (() => {
     // roll spin (the sliced roll rows are a 2-frame tumble; finish the arc)
     if (f.state === 'roll') {
       const k = clamp((f.actionT || 0) / ((f.action && f.action.dur) || 26), 0, 1);
+      /* How much of the turn the row leaves to finish.  The sheets drew two poses, so
+         the renderer used to carry the whole revolution; a row with four real tumbles
+         (tools/slice_rows.py injects those) already shows most of it, and spinning a
+         full turn on top of that turns the roll into a washing machine. */
+      const rest = (sel.frames && sel.frames.length >= 4) ? 0.25 : 1;
       ctx.translate(0, -h * 0.5);
-      ctx.rotate(k * TAU * ((f.rollDir || f.facing) > 0 ? 1 : -1));
+      ctx.rotate(k * TAU * rest * ((f.rollDir || f.facing) > 0 ? 1 : -1));
       ctx.translate(0, h * 0.5);
     }
     if (f.state === 'ledge') { ctx.translate(0, 5); ctx.rotate(0.05); }
@@ -1384,6 +1449,7 @@ const Sprites = (() => {
 
   return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
     atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
+    loadItems, itemArt, ITEM_ART,
     setBlend, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 

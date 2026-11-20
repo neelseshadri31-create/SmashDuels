@@ -58,6 +58,19 @@ for a horizontal swing, and the *hurt* box measures the figure alone, not its ef
 Rows the slicer could not split are re-cut by `tools/atlas_desmerge.py` from the shipped
 atlas PNG (no re-slicing), which is what turned the last merged filmstrips into animation.
 
+Where a row is *short* rather than merged — the sheets only drew two dash frames, two roll
+frames, and no dash-attack row at all — re-cutting cannot help, so the frames are drawn:
+`tools/slice_rows.py` takes a generated sheet of poses on a flat magenta field, splits it by
+ink mass (rows, then cells), scales a whole row to that fighter's reference height, keys its
+baked effect into a separate overlay tile so `vfxGate` can still fade it, packs the tiles into
+space the atlas is not already using (growing the canvas if there is none) and rewrites the
+row in the JSON.  Idempotent per row, and `--key grim --revert` restores the atlas.
+
+```bash
+../.imgenv/bin/python tools/slice_rows.py --key grim \
+        --sheet assets-src/rows/grim-rows.png --rows dashattack,dash,rollfwd,rollback --cells 4
+```
+
 ### Watching an animation without a browser
 
 `tools/film.js` drives the engine at a fixed tick and writes down every `drawImage` the
@@ -115,11 +128,18 @@ Gamepads are detected automatically for both players. `M` mutes audio, `Esc` pau
 - Hitstun, directional influence, stale-move negation (last 10 moves decay to 62%)
 - Ledge grabbing with climb / attack / roll / jump get-ups, edge-guarding, recovery moves
 
-**Items (§8)** — 21 items: battering (beam sword, home-run bat, star rod), throwing (bob-omb,
+**Items (§8)** — 22 items: battering (beam sword, home-run bat, star rod), throwing (bob-omb,
 shell, bumper), shooting (ray gun, fire flower), healing (heart, tomato, food), status
 (star, mushrooms, metal box, bunny hood), containers (crate, capsule), summons, Smash Ball,
 Hammer. Item frequency and individual toggles. A swing or shot of a held item costs
 `ITEM_SWING` = 24 ticks, for the CPU's own item path as well as the player's button.
+
+Each one draws a generated sprite from `assets/items/` (built by `tools/slice_items.py` out of
+`assets-src/items/*.png`), placed by what an item *is* rather than by its collision box: a
+resting item sits on its bottom edge, so a crate stands on the deck instead of sinking through
+it, and a held item hangs off the holder's own hurtbox at the knuckle line, mirrors with the
+facing and swings through an attack. `items.json` carries the drawn size and the mirror flag;
+if the art is missing the old vector icon still draws, so nothing can blank.
 
 **Final Smash (§7)** — Smash Ball spawns and floats, breaks under damage, grants an
 aura; press special for a screen-clearing super.
@@ -165,8 +185,8 @@ python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
 The engine runs headless in node — no browser, no canvas (also from the project root):
 
 ```bash
-node tools/animtest.js      # animation states, frame data, hitbox geometry  (27)
-node tools/simtest.js       # physics, collision, state machine, 4-player   (30)
+node tools/animtest.js      # animation states, frame data, hitbox geometry  (28)
+node tools/simtest.js       # physics, collision, state machine, 4-player   (34)
 node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
 node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
 ```
@@ -204,9 +224,12 @@ game/
   js/ui.js          screens, HUD, main loop, debug hooks
   js/cloud.js       optional cross-device save sync (see above)
   assets/atlas/     {key}.png + {key}.json — packed animation atlases (generated)
+  assets/items/     {key}.png + items.json — item sprites (generated, see tools/slice_items.py)
 
 tools/
   slice_roster.py       roster sheets → atlas + animation meta
+  slice_rows.py         generated pose sheets → extra rows injected into an atlas
+  slice_items.py        generated item sheet → game/assets/items + items.json
   atlas_desmerge.py     re-cut the merged attack rows the slicer could not split
   harness.js            headless boot (stub DOM/canvas/audio) shared by the suites
   animtest.js           animation + hitbox tests  · node tools/animtest.js

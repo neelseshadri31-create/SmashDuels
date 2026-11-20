@@ -556,6 +556,54 @@ test('hurtbox: it matches the drawn body, and the pose changes it', async () => 
 });
 
 /* =================== movement states =================== */
+test('rows: the dash attack has its own art, and plays it as a lunge', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const problems = [];
+  for (const key of KEYS) {
+    const at = S.atlas(key);
+    // tools/slice_rows.py injects these; a fighter missing them silently borrows
+    // another row (dashattack used to be the side tilt) and reads as one squashed frame
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback']) {
+      const n = ((at.anims[row] || [])).length;
+      if (n < 4) problems.push(`${key}.${row}: ${n} frames`);
+    }
+    if (S.MOVE_ANIM.dashattack !== 'dashattack') problems.push(`${key}: MOVE_ANIM.dashattack is not its own row`);
+    const da = at.anims.dashattack || [], st = at.anims.stilt || [];
+    if (da.length && da.every((e, i) => st[i] && e[0] === st[i][0])) problems.push(`${key}: dashattack tiles are the side tilt's`);
+    // the strike frame has to reach further forward than standing still does, or the
+    // lunge is a picture of a lunge that hits at arm's length
+    const geo = at.strike.dashattack;
+    const ink = geo && at.box.dashattack && at.box.dashattack[geo.k];
+    if (!ink) problems.push(`${key}: dashattack has no strike frame the hitbox can read`);
+    // the row has to *move* along the blow: the strike frame reaching further forward
+    // than the least-reaching one is what a lunge looks like.  Measured against the
+    // idle silhouette instead, a gunslinger standing with a rifle out already "reaches"
+    // further than any lunge, and the comparison says nothing.
+    else {
+      const reach = (at.box.dashattack || []).filter(Boolean).map((b) => b[2] * at.scale);
+      const span = Math.max(...reach) - Math.min(...reach);
+      if (span < 8) problems.push(`${key}: dashattack row barely extends along the blow (${span.toFixed(1)}px)`);
+    }
+  }
+  assert(!problems.length, problems.join('\n        '));
+  // and in play: a real dash attack turns over at least three of its frames
+  const m = pair(h, 'grim', 'valor', 90, 300);
+  const f = m.fighters[0];
+  const seen = new Set();
+  f.x = m.stage.ground.x + 200; f.facing = 1;
+  m.readPlayerInput = () => ({ right: true });
+  for (let i = 0; i < 6; i++) m.update();
+  f.startAttack('dashattack', m);
+  for (let i = 0; i < 34 && f.state === 'attack'; i++) {
+    const sel = S.pickAnim(f, 0);
+    if (sel.name === 'dashattack') seen.add(sel.i);
+    m.readPlayerInput = () => ({});
+    m.update();
+  }
+  assert(seen.size >= 3, `a dash attack drew ${seen.size} distinct frames (${[...seen].join(',')}), not a lunge`);
+});
+
 test('movement: a fresh tap bursts, plays the dash row and arms the run', async () => {
   const h = await roster();
   const S = h.g.Sprites;

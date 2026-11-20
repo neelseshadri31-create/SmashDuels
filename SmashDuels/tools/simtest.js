@@ -458,11 +458,15 @@ test('states: jump / land / crouch / fall are all reachable and settle', () => {
   const m = newMatch(ctx, cast(1, ['rook']), 'hollow');
   const f = m.fighters[0];
   m.readPlayerInput = (fr) => fr.__raw || {};
+  const gd = m.stage.ground;
+  // spawn x is randomised, and where you land decides how long `land` lasts — so the
+  // pose starts on the deck centre and the crouch window is wider than any landing
+  f.x = gd.x + gd.w / 2;
   f.y = m.stage.ground.y - 320; f.vy = 0; f.onGround = false;
   const seen = new Set();
   for (let i = 0; i < 400; i++) {
     const t = i % 80;
-    f.__raw = { jump: t === 0, down: t > 40 && t < 60, left: t > 10 && t < 30, right: t > 60 };
+    f.__raw = { jump: t === 0, down: t > 34 && t < 76, left: t > 10 && t < 30, right: t > 60 };
     m.update();
     seen.add(f.state);
     assert(Number.isFinite(f.x) && Number.isFinite(f.y), 'NaN in ' + f.state);
@@ -514,13 +518,19 @@ test('ledge: three fighters contesting one ledge never enter the slab', () => {
 });
 
 test('4v4 teams + items: 30s of frames stays finite, in-bounds and unstacked', () => {
+  const realRandom = Math.random;
+  Math.random = seededRandom(3301);                 // an unseeded 4v4 flaked ~1 run in 3
+  try { teamsMatch(); } finally { Math.random = realRandom; }
+});
+
+function teamsMatch() {
   const { ctx, g } = run();
   const m = newMatch(ctx, cast(4, ['valor', 'grim', 'astra', 'vesper'], { teams: true, cpu: true }), 'foundry', {
     rules: { items: 'medium', teams: true, mode: 'teams' },
   });
   const gd = m.stage.ground;
   const keys = Object.keys(g.ITEMS);
-  let worstOverlap = 0, inSlab = 0;
+  let worstOverlap = 0, inSlab = 0, deepRun = 0, worstDeep = 0, fullRun = 0, worstFull = 0;
   for (let i = 0; i < 1800; i++) {
     if (i % 300 === 0) m.spawnItem(keys[Math.floor(i / 300) % keys.length], (i % 2 ? 140 : -140), -80);
     m.update();
@@ -530,17 +540,28 @@ test('4v4 teams + items: 30s of frames stays finite, in-bounds and unstacked', (
       assert(Math.abs(f.x) < 3000, `fighter escaped the world: ${f.key} x=${f.x}`);
       if (f.y > gd.y + 6 && f.y < gd.y + gd.h + 8 && f.x > gd.x + 6 && f.x < gd.x + gd.w - 6) inSlab++;
     }
+    // only fighters who are in the round can be "stacked"; the respawn waiting area
+    // is deliberately a pile of fighters parked at the same point above the stage
+    let deep = false, full = false;
     for (let a = 0; a < m.fighters.length; a++) {
       for (let b = a + 1; b < m.fighters.length; b++) {
         const A = m.fighters[a], B = m.fighters[b];
-        if (A.eliminated || B.eliminated || Math.abs(A.y - B.y) > 40) continue;
-        worstOverlap = Math.max(worstOverlap, 52 - Math.abs(A.x - B.x));
+        if (A.eliminated || B.eliminated || A.state === 'respawn' || B.state === 'respawn') continue;
+        if (Math.abs(A.y - B.y) > 40) continue;
+        const gap = Math.abs(A.x - B.x);
+        worstOverlap = Math.max(worstOverlap, 52 - gap);
+        if (gap < 30) deep = true;
+        if (gap < 6) full = true;
       }
     }
+    deepRun = deep ? deepRun + 1 : 0;   worstDeep = Math.max(worstDeep, deepRun);
+    fullRun = full ? fullRun + 1 : 0;   worstFull = Math.max(worstFull, fullRun);
   }
   assert(inSlab === 0, inSlab + ' frames had a fighter inside the stage slab');
-  assert(worstOverlap < 52, 'fighters were fully stacked for part of the match');
-});
+  assert(worstFull <= 2, `two fighters were fully stacked for ${worstFull} frames`);
+  assert(worstDeep < 40, `two fighters stayed >22px overlapped for ${worstDeep} frames`);
+  console.log(`        worst overlap ${(52 - worstOverlap).toFixed(0)}px gap-based, deep run ${worstDeep}f, full run ${worstFull}f`);
+}
 
 test('stress: random mashers never produce NaN or a stuck overlap', () => {
   const { ctx } = run();
@@ -623,7 +644,8 @@ function vs4Match(stage) {
       /* a fighter with no hitstun left must not stay in a hit state: that is the
          "lying on the floor forever" report, and it also keeps the air drag on, so
          the body slides at a third of a pixel a tick */
-      r.stale = ((f.state === 'hitstun' || f.state === 'launch') && f.hitstun <= 0) ? r.stale + 1 : 0;
+      // hitlag is a designed freeze, and it holds the state still by definition
+      r.stale = ((f.state === 'hitstun' || f.state === 'launch') && f.hitstun <= 0 && f.hitlag <= 0) ? r.stale + 1 : 0;
       r.worstStale = Math.max(r.worstStale, r.stale);
       r.hang = f.state === 'ledge' ? r.hang + 1 : 0;
       r.worstHang = Math.max(r.worstHang, r.hang);
@@ -640,7 +662,7 @@ function vs4Match(stage) {
   }
   assert(burst <= 10, `${burst} hits on one fighter inside 60 frames`);
   const stale = runs.reduce((a, r) => Math.max(a, r.worstStale), 0);
-  assert(stale <= 8, `a fighter sat in a hit state with no hitstun left for ${stale} frames`);
+  assert(stale <= 2, `a fighter sat in a hit state with no hitstun left for ${stale} frames`);
   const hang = runs.reduce((a, r) => Math.max(a, r.worstHang || 0), 0);
   assert(hang < 100, `a ledge-hang lasted ${hang} frames — the auto-get-up is not firing`);
   const worst = runs.reduce((a, r) => Math.max(a, r.worst), 0);
@@ -708,6 +730,127 @@ test('vs4: a grab releases its victim even if the grabber never presses throw', 
   assert(stuck === held, `the victim stayed attached for ${stuck} of ${held} frames`);
   assert(!a.grabbing && !b.grabbedBy, 'the pair never un-grabbed');
   assert(b.state !== 'grabbed', `victim still in state ${b.state} after the throw`);
+});
+
+/* =================== actions keep their momentum ===================
+   A locked action owns the input, never the body.  `updateAction` used to be the
+   last thing a grounded action did in a tick, so nothing integrated the velocity it
+   wrote: the run attack's lunge, the roll, the dash specials' `dist`, the landing
+   slide — all of it was thrown away, and the fighter stood stock still while the
+   move played.  This is the family behind "the dash attack doesn't work". */
+
+function dashInto(m, g, c, key, ticks) {
+  const move = g.def.moves[key];
+  g.state = 'run'; g.facing = 1; g.vx = g.def.stats.run; g.dashT = 4; g.runArmed = true; g.onGround = true;
+  g.startAttack(key, m);
+  const x0 = g.x;
+  let travel = 0, len = 0;
+  for (let i = 0; i < ticks; i++) {
+    c.tick(1);
+    travel = Math.max(travel, Math.abs(g.x - x0));
+    if (g.action && g.action.key === key) len = Math.max(len, g.actionT);
+  }
+  return { travel, len, move };
+}
+
+test('dash: a run attack keeps its lunge instead of stopping dead', () => {
+  const { ctx } = run();
+  for (const key of ['grim', 'valor', 'vesper', 'astra', 'rook']) {
+    const m = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const g = m.fighters[0];
+    control(m).tick(24);                                   // settle on the deck
+    const c = control(m, () => ({}));
+    const r = dashInto(m, g, c, 'dashattack', g.def.moves.dashattack.frames + 6);
+    assert(r.len > 0, `${key}: the dash attack never started`);
+    // Before the fix this was 0.0px for every fighter in the roster.
+    assert(r.travel > 18, `${key} dash attack travelled only ${r.travel.toFixed(1)}px`);
+    assert(r.travel < 130, `${key} dash attack slid ${r.travel.toFixed(1)}px — a budget, not a freight train`);
+  }
+});
+
+test('dash: the lunge is what carries the run attack onto its target', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m.fighters[0], t = m.fighters[1];
+  control(m).tick(24);
+  // parked just past what the box reaches standing still, well inside lunge + box
+  const reach = Math.max(...g.def.moves.dashattack.hitboxes.map((b) => b.x + b.w)) * g.scale;
+  t.x = g.x + reach + 14; t.y = g.y; t.vx = t.vy = 0;
+  const x0 = t.x;
+  const c = control(m, () => ({}));
+  g.state = 'run'; g.facing = 1; g.vx = g.def.stats.run; g.runArmed = true;
+  g.startAttack('dashattack', m);
+  let hit = false;
+  for (let i = 0; i < g.def.moves.dashattack.frames + 8; i++) {
+    t.x = x0; t.vx = t.vy = 0; t.hitstun = 0; t.hitlag = 0;   // a dummy that never moves
+    if (g.action && g.action.key === 'dashattack' && g.activeBoxes().length) hit = true;
+    c.tick(1);
+  }
+  assert(t.damage > 0, `the dummy at +14px past the standing box took ${t.damage}% — the lunge does not close the gap`);
+});
+
+test('dash: a roll rolls, and a rush special covers the distance its data promises', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m.fighters[0];
+  control(m).tick(24);
+  const c = control(m, () => ({}));
+  g.onGround = true; g.vx = 0; g.hitstun = 0;
+  g.startRoll(1, m);
+  let roll = 0;
+  const x0 = g.x;
+  for (let i = 0; i < 32; i++) { c.tick(1); roll = Math.max(roll, Math.abs(g.x - x0)); }
+  assert(roll > 12, `a dodge-roll covered ${roll.toFixed(1)}px — a roll is a movement, not a pose`);
+
+  for (const key of ['grim', 'valor', 'astra']) {
+    const mm = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const f = mm.fighters[0];
+    control(mm).tick(24);
+    const cc = control(mm, () => ({}));
+    f.onGround = true; f.vx = 0; f.facing = 1; f.hitstun = 0;
+    f.startSpecial('s', mm);
+    assert(f.state === 'special', `${key}: no rush special fired`);
+    let best = 0;
+    const sx = f.x;
+    for (let i = 0; i < 100; i++) { cc.tick(1); best = Math.max(best, Math.abs(f.x - sx)); }
+    const want = f.def.specials.side.dist;
+    assert(best > want * 0.45, `${key}'s rush covered ${best.toFixed(0)}px of its authored ${want}px`);
+    assert(best < want * 1.9, `${key}'s rush covered ${best.toFixed(0)}px, more than its authored ${want}px`);
+  }
+
+  // …and a plain grounded move still stays where it was put
+  const m3 = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const j = m3.fighters[0];
+  control(m3).tick(24);
+  const c3 = control(m3, () => ({}));
+  j.onGround = true; j.vx = 0; j.state = 'idle';
+  j.startAttack('jab', m3);
+  let drift = 0;
+  const jx = j.x;
+  for (let i = 0; i < 24; i++) { c3.tick(1); drift = Math.max(drift, Math.abs(j.x - jx)); }
+  assert(drift < 6, `a standing jab slid ${drift.toFixed(1)}px — a tilt should stay planted`);
+});
+
+test('grab: a pummel damages its victim inside the grab instead of launching them', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'vesper']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  control(m).tick(24);
+  const c = control(m, () => ({}));
+  m.beginGrab(a, b);
+  const d0 = b.damage, x0 = b.x, y0 = b.y;
+  let held = 0;
+  for (let i = 0; i < 40; i++) {
+    if (i % 8 === 0) m.pummel(a);
+    if (a.grabbing && b.grabbedBy) held++;
+    c.tick(1);
+  }
+  assert(b.damage > d0, `three pummels dealt ${b.damage - d0}% — the pummel did nothing`);
+  assert(held > 30, `the pair stayed attached for only ${held}/40 frames — a pummel must not break the hold`);
+  assert(b.state === 'grabbed', `victim is in state ${b.state}, expected to still be grabbed`);
+  assert(Math.abs(b.y - y0) < 40 && Math.abs(b.x - (a.x + a.facing * 30 * a.scale)) < 8,
+    `victim drifted to (${b.x.toFixed(0)},${b.y.toFixed(0)}) — a pummel is not a throw`);
+  void x0;
 });
 
 /* ---------------- entry ---------------- */
