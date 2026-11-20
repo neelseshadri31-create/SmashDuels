@@ -564,7 +564,8 @@ test('rows: the dash attack has its own art, and plays it as a lunge', async () 
     const at = S.atlas(key);
     // tools/slice_rows.py injects these; a fighter missing them silently borrows
     // another row (dashattack used to be the side tilt) and reads as one squashed frame
-    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair']) {
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair',
+      'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
       const n = ((at.anims[row] || [])).length;
       if (n < 4) problems.push(`${key}.${row}: ${n} frames`);
     }
@@ -572,7 +573,7 @@ test('rows: the dash attack has its own art, and plays it as a lunge', async () 
     // the sheet's band split into cells that repeat a tile.  Four distinct tiles per
     // heavy row is what the fluidity pass bought; the count alone would not notice it
     // being quietly lost again.
-    for (const row of ['dsmash', 'ssmash', 'nair']) {
+    for (const row of ['dsmash', 'ssmash', 'nair', 'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
       const a = at.anims[row] || [];
       const uniq = new Set(a.map((e) => e[0])).size;
       if (a.length >= 4 && uniq < a.length) problems.push(`${key}.${row}: ${uniq} distinct tiles for ${a.length} frames`);
@@ -638,8 +639,10 @@ test('flow: every injected row is spent in play, not just present', async () => 
       f.startAttack('nair', m);
     },
   };
+  const SPECIALS = { nspecial: 'n', sspecial: 's', uspecial: 'u', dspecial: 'd' };
   for (const key of KEYS) {
-    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair']) {
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair',
+      'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
       // roomy on purpose: the dummy at +70px pushes a dash back into `idle` after a
       // couple of ticks, and the burst then measures as three frames of a four-cell
       // row — which is the test setup, not the game
@@ -654,7 +657,10 @@ test('flow: every injected row is spent in play, not just present', async () => 
           ? (i === 0 ? { right: true } : i < 4 ? {} : { right: true })
           : (fired ? { right: true } : {});
         m.fighters[1].__raw = {};
-        if (!fired && i === 1 && row !== 'dash') { START[row](f, m); fired = true; }
+        if (!fired && i === 1 && row !== 'dash') {
+          if (SPECIALS[row]) f.startSpecial(SPECIALS[row], m); else START[row](f, m);
+          fired = true;
+        }
         if (row === 'dash') fired = true;
         m.update();
         // sampled after the tick: the burst is what the panel draws while the state
@@ -669,7 +675,11 @@ test('flow: every injected row is spent in play, not just present', async () => 
       // even `run`, and only then does the row get to show.  Two cells inside that is a
       // pose every two ticks, which is what a burst should read as.  Everything else
       // has the whole move to spend its row.
-      const need = Math.min(row === 'dash' ? 2 : 3, have);
+      // A counter stance gets the same allowance for the opposite reason: that move is
+      // one long hold whose tiles are paced by the release at the end of it, so two of
+      // four is the shape of a parry, not a thin row (BUGS.md §K6).
+      const stance = row === 'dspecial' && (h.g.FIGHTERS[key].specials.down || {}).type === 'counter';
+      const need = Math.min(row === 'dash' || stance ? 2 : 3, have);
       if (!seq.length) problems.push(`${key}.${row}: the move never drew a frame of its own row`);
       else if (shown < need) problems.push(`${key}.${row}: ${shown} of ${have} cells shown in ${seq.length} ticks`);
     }

@@ -394,6 +394,8 @@ const UI = (() => {
   function boot() {
     SAVE.load();
     INPUT.init();
+    /* Printed on boot so "is my tab running the new code?" is a one-glance answer. */
+    console.info(`[rift] build ${BUILD}`);
     buildTitle();
     buildSelect();
     setupMatchScreen();
@@ -869,6 +871,7 @@ window.RR = {
     const m = window.__match; if (!m) return null;
     const f = m.fighters[0];
     return {
+      build: typeof BUILD !== 'undefined' ? BUILD : '?',
       st: f.state, keys: Object.keys(INPUT.keys).filter(k => INPUT.keys[k]),
       hit: Object.keys(INPUT.pressed).filter(k => INPUT.pressed[k]),
       buf: JSON.parse(JSON.stringify(f.inputBuffer)),

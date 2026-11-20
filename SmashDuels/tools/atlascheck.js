@@ -415,6 +415,38 @@ test('renderer: palettes tint without touching the source atlas', () => {
   });
 });
 
+/* ---------------- the build the browser actually fetches ---------------- */
+/* A static host with no Cache-Control lets a tab reuse a script it fetched yesterday, so
+   the version query on every subresource is what makes "I fixed it" observable in the
+   browser instead of only in the test runner.  This checks the promise, because the
+   failure mode of forgetting to bump it is a user playing an old build and reporting a
+   bug that is already fixed — which has happened. */
+test('build: every subresource index.html loads is versioned to the current build', () => {
+  const html = fs.readFileSync(path.join(GAME, 'index.html'), 'utf8');
+  const core = fs.readFileSync(path.join(GAME, 'js', 'core.js'), 'utf8');
+  const m = core.match(/const BUILD = '([^']+)'/);
+  assert(m, 'core.js no longer defines BUILD');
+  const build = m[1];
+  const linked = [...html.matchAll(/<script src="(js\/[^"]+)"/g)].map((x) => x[1]);
+  assert(linked.length >= 10, `index.html links ${linked.length} scripts`);
+  const stale = linked.filter((src) => !src.endsWith('?v=' + build));
+  assert(!stale.length, `scripts linked without the current build token: ${stale.join(', ')}`);
+  const css = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((x) => x[1]);
+  assert(css.length && css.every((c) => c.endsWith('?v=' + build)), `stylesheet not versioned: ${css.join(', ')}`);
+  // every file in js/ is linked, and core.js is first (everything else reads its consts)
+  const files = fs.readdirSync(path.join(GAME, 'js')).filter((f) => f.endsWith('.js')).sort();
+  const named = linked.map((src) => src.split('?')[0].replace('js/', '')).sort();
+  assert(JSON.stringify(named) === JSON.stringify(files), `js/ and index.html disagree:\n        linked ${named.join(',')}\n        on disk ${files.join(',')}`);
+  assert(linked[0].startsWith('js/core.js?'), 'core.js must be the first script');
+  // the atlases and item art are fetched from JS, and a PNG from one build with a JSON
+  // from another draws tiles out of the wrong rectangle
+  const render = fs.readFileSync(path.join(GAME, 'js', 'render.js'), 'utf8');
+  assert(/const VQ = '\?v=' \+ \(typeof BUILD/.test(render), 'render.js does not derive its asset query from BUILD');
+  for (const pat of ['assets/atlas/${k}.json${VQ}', 'assets/atlas/${k}.png${VQ}', "assets/items/items.json' + VQ", 'assets/items/${rec.file}${VQ}']) {
+    assert(render.includes(pat), `render.js fetches \`${pat.split('$')[0]}\` without the version: ${pat}`);
+  }
+});
+
 /* ---------------- entry ---------------- */
 (async () => {
   const fail = await T.run(process.argv[2]);

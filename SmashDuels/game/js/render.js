@@ -392,10 +392,13 @@ const Sprites = (() => {
     return { phase: 2, p: clamp((t - startup - active) / Math.max(1, dur - startup - active), 0, 1) };
   }
 
+  /* Same reason as `BUILD` in core.js: an atlas whose PNG and JSON come from two
+     different builds draws tiles from the wrong rectangles. */
+  const VQ = '?v=' + (typeof BUILD !== 'undefined' ? BUILD : '0');
   let atlasWarned = false;
   function load() {
     for (const k of KEYS) {
-      fetch(`assets/atlas/${k}.json`)
+      fetch(`assets/atlas/${k}.json${VQ}`)
         .then(r => (r && r.ok) ? r.json() : Promise.reject(new Error('no atlas ' + k)))
         .then(meta => {
           const img = new Image();
@@ -418,7 +421,7 @@ const Sprites = (() => {
             A[k] = A_;
           };
           img.onerror = () => { A[k] = null; };
-          img.src = `assets/atlas/${k}.png`;
+          img.src = `assets/atlas/${k}.png${VQ}`;
         })
         .catch(() => {
           A[k] = null;
@@ -446,7 +449,7 @@ const Sprites = (() => {
      a partial or absent art directory degrades instead of blanking. */
   function loadItems() {
     if (typeof fetch !== 'function' || typeof Image !== 'function') return;
-    fetch('assets/items/items.json')
+    fetch('assets/items/items.json' + VQ)
       .then((r) => (r && r.ok ? r.json() : Promise.reject(new Error('no item manifest'))))
       .then((man) => {
         const items = (man && man.items) || {};
@@ -457,7 +460,7 @@ const Sprites = (() => {
           const img = new Image();
           img.onload = () => { entry.img = img; };
           img.onerror = () => { ITEM_ART[k] = false; };
-          img.src = `assets/items/${rec.file}`;
+          img.src = `assets/items/${rec.file}${VQ}`;
         }
       })
       .catch(() => { ITEM_ART.__failed = true; });

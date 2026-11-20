@@ -96,6 +96,25 @@ const SCENES = {
 };
 for (const mv of MOVES) SCENES[mv] = attack(mv, { air: mv.endsWith('air') });
 
+/* Specials, filmed the same way.  `rushB` is the reported case exactly: run first, press
+   B on the way in, with a foe standing in the way — so the contact tick is in the sheet
+   rather than only in a test's numbers. */
+function special(dir, opts = {}) {
+  return {
+    ticks: opts.ticks || TICKS,
+    foeX: opts.contact ? 470 : 1400,
+    warm: opts.runIn || 0,
+    warmInput: () => ({ right: true }),
+    setup: (m, f) => f.startSpecial(dir, m),
+    input: () => (opts.runIn ? {} : {}),
+  };
+}
+SCENES.nspecial = special('n');
+SCENES.sspecial = special('s');
+SCENES.uspecial = special('u');
+SCENES.dspecial = special('d');
+SCENES.rushB = special('s', { contact: true, runIn: 16, ticks: 30 });
+
 /* ---------------- record one scene ---------------- */
 function scene(h, name, spec, key) {
   const m = newMatch(h.ctx, cast(2, [key, 'grim']), 'skyshrine', { state: 'play' });

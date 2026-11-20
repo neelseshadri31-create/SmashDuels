@@ -82,6 +82,7 @@ sheet and an animated GIF per fighter (needs Pillow; nothing else):
 
 ```bash
 node tools/film.js valor                     # record one fighter's rows at 60 Hz
+node tools/film.js grim rushB                # …the reported case: run, then B, into a foe
 node tools/film.js valor --hz=120 --blend=0  # …as a 120 Hz panel sees it, blending off
 python3 tools/film_render.py valor            # → anim-films/valor.film.png / .gif
 python3 tools/film_render.py --rows fsmash,walk,dash   # just those rows
@@ -182,6 +183,19 @@ python3 tools/slice_roster.py --report   # audit what the slicer recovered
 python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
 ```
 
+### Which build the browser is running
+
+`js/core.js` defines `BUILD`, and `index.html` links every script and the stylesheet with a
+`?v=` of that token; the atlas and item fetches in `js/render.js` carry it too, because a PNG
+from one build and a JSON from another draws tiles out of the wrong rectangle.  This is not
+decoration: the preview is a plain static server that sends no `Cache-Control`, so a browser
+tab is free to keep executing a script it fetched an hour ago without asking again — which is
+how a fixed move stays "still broken" while every test about it is green.  So bump `BUILD`
+and the queries in the same commit as any change under `game/js` or `game/assets`, and when a
+report says an old bug is still there, read the `[rift] build …` line the game prints on boot
+(or `UI.diag().build`) before believing it.  `tools/atlascheck.js` fails the build if the
+token in `core.js` and the ones in `index.html`/`render.js` drift apart.
+
 ## Tests
 
 The engine runs headless in node — no browser, no canvas (also from the project root):
@@ -189,7 +203,7 @@ The engine runs headless in node — no browser, no canvas (also from the projec
 ```bash
 node tools/animtest.js      # animation states, frame data, hitbox geometry  (29)
 node tools/simtest.js       # physics, collision, state machine, 4-player   (35)
-node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
+node tools/atlascheck.js    # atlases + the sprite renderer                   (15)
 node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
 ```
 
