@@ -14,8 +14,8 @@ atlas's own reference height, packs the tiles into the free space of the existin
 PNG, and rewrites the row in `<key>.json`.  Nothing else about the atlas is touched, so
 a re-run is safe and `--revert` puts the original JSON (and PNG) back.
 
-    python3 tools/slice_rows.py --key grim --sheet assets-src/rows/grim-rows.png \
-            --rows dashattack,dash,rollfwd,rollback --preview /tmp/grim-rows.png
+    python3 tools/slice_rows.py --key grim --sheet assets-src/rows/grim-sheetA.png \
+            --rows idle,run,walk,jump,fall,land --preview /tmp/grim-rows.png
     python3 tools/slice_rows.py --key grim --revert
 
 The two rules the atlas is built on, and which this tool has to satisfy because

@@ -78,9 +78,9 @@ system Python (PEP 668): `python3 -m venv /tmp/venv && /tmp/venv/bin/pip install
 
 ```bash
 /tmp/venv/bin/python tools/slice_rows.py --key grim \
-        --sheet assets-src/rows/grim-rows.png --rows dashattack,dash,rollfwd,rollback --cells 4
-/tmp/venv/bin/python tools/slice_rows.py --key grim --sheet assets-src/rows/grim-loco.png \
-        --rows idle,walk,run --cells 8,8,8 --dry --preview /tmp/prev.png   # look first
+        --sheet assets-src/rows/grim-sheetB.png --rows dashattack,dsmash --cells 8
+/tmp/venv/bin/python tools/slice_rows.py --key grim --sheet assets-src/rows/grim-sheetA.png \
+        --rows idle,run,walk,jump,fall,land --cells 8,8,8,8,8,8 --dry --preview /tmp/prev.png   # look first
 ```
 
 Rows are matched from the **top** of the sheet, so `--rows walk,run` against a three-row sheet
