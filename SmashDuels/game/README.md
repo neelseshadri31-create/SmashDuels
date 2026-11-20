@@ -187,7 +187,7 @@ python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
 The engine runs headless in node — no browser, no canvas (also from the project root):
 
 ```bash
-node tools/animtest.js      # animation states, frame data, hitbox geometry  (28)
+node tools/animtest.js      # animation states, frame data, hitbox geometry  (29)
 node tools/simtest.js       # physics, collision, state machine, 4-player   (34)
 node tools/atlascheck.js    # atlases + the sprite renderer                   (14)
 node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
@@ -198,6 +198,12 @@ suite and `js/cloud.js` for the sync suite) inside a stubbed DOM, so the code un
 code that runs in the browser. `cloudtest.js` also stubs `fetch` with a server that speaks the
 same protocol as the Postgres function in `supabase/migrations/`, so both sides of the wire are
 covered without a project. Pass a substring to filter, `V=1` for stacks.
+
+`animtest`'s `flow:` test is the one that watches the half a structural check cannot see: it
+drives a real dash, roll and each injected attack at 60 Hz and counts how many of a row's
+cells the renderer actually *spends* while the move is live.  A four-cell row that a move only
+shows two frames of is two frames of art and two frames of nothing, and the atlas stays
+perfectly well-formed either way.
 
 ## Cloud saves (optional)
 

@@ -564,9 +564,22 @@ test('rows: the dash attack has its own art, and plays it as a lunge', async () 
     const at = S.atlas(key);
     // tools/slice_rows.py injects these; a fighter missing them silently borrows
     // another row (dashattack used to be the side tilt) and reads as one squashed frame
-    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback']) {
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair']) {
       const n = ((at.anims[row] || [])).length;
       if (n < 4) problems.push(`${key}.${row}: ${n} frames`);
+    }
+    // A generated row can survive with four indices while only holding two poses, if
+    // the sheet's band split into cells that repeat a tile.  Four distinct tiles per
+    // heavy row is what the fluidity pass bought; the count alone would not notice it
+    // being quietly lost again.
+    for (const row of ['dsmash', 'ssmash', 'nair']) {
+      const a = at.anims[row] || [];
+      const uniq = new Set(a.map((e) => e[0])).size;
+      if (a.length >= 4 && uniq < a.length) problems.push(`${key}.${row}: ${uniq} distinct tiles for ${a.length} frames`);
+      // and the cells are poses, not strips: a frame wider than it is tall, by more
+      // than a weapon's reach, is a merged panorama (Grim's 232px down smash was)
+      const odd = a.map((e) => at.tiles[e[0]]).filter((t) => t && t.w > 2.2 * t.h && t.w > 100);
+      if (odd.length) problems.push(`${key}.${row}: ${odd.length} frame(s) ${odd.map((t) => t.w + 'x' + t.h).join(', ')} are strips, not poses`);
     }
     if (S.MOVE_ANIM.dashattack !== 'dashattack') problems.push(`${key}: MOVE_ANIM.dashattack is not its own row`);
     const da = at.anims.dashattack || [], st = at.anims.stilt || [];
@@ -602,6 +615,66 @@ test('rows: the dash attack has its own art, and plays it as a lunge', async () 
     m.update();
   }
   assert(seen.size >= 3, `a dash attack drew ${seen.size} distinct frames (${[...seen].join(',')}), not a lunge`);
+});
+
+/* A four-cell row that the move never gets through is four frames of art and two of
+   nothing, and a sheet can regress into that without any atlas test noticing: the row
+   still exists, the rects are still clean.  This watches the real thing — a dash, a
+   roll, each of the injected attacks — and counts how many of the row's cells the
+   renderer actually spends while the move is live, at 60 Hz with blend off (worst case).
+   Driven the way simtest drives it, so the state machine is telling the truth. */
+test('flow: every injected row is spent in play, not just present', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const problems = [];
+  const START = {
+    dashattack: (f, m) => { f.state = 'run'; f.runArmed = true; f.dashT = 12; f.vx = f.def.stats.run; f.startAttack('dashattack', m); },
+    rollfwd: (f, m) => { f.startRoll(1, m); },
+    rollback: (f, m) => { f.startRoll(-1, m); },
+    dsmash: (f, m) => f.startAttack('dsmash', m),
+    ssmash: (f, m) => f.startAttack('fsmash', m),
+    nair: (f, m) => {
+      f.y = m.stage.ground.y + 60; f.vy = 0; f.onGround = false; f.state = 'fall';
+      f.startAttack('nair', m);
+    },
+  };
+  for (const key of KEYS) {
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair']) {
+      // roomy on purpose: the dummy at +70px pushes a dash back into `idle` after a
+      // couple of ticks, and the burst then measures as three frames of a four-cell
+      // row — which is the test setup, not the game
+      const m = pair(h, key, 'rook', 240, 760);
+      const f = m.fighters[0];
+      const seq = [];
+      let fired = false;
+      for (let i = 0; i < 60; i++) {
+        // a real dash is a tap then a hold, so it is driven from the input, not by
+        // writing the state down (the sim recomputes it from speed every tick)
+        f.__raw = row === 'dash'
+          ? (i === 0 ? { right: true } : i < 4 ? {} : { right: true })
+          : (fired ? { right: true } : {});
+        m.fighters[1].__raw = {};
+        if (!fired && i === 1 && row !== 'dash') { START[row](f, m); fired = true; }
+        if (row === 'dash') fired = true;
+        m.update();
+        // sampled after the tick: the burst is what the panel draws while the state
+        // machine is in it, and sampling before would quietly lop the last tick off
+        const sel = S.pickAnim(f, 0);
+        if (sel && sel.name === row) seq.push(sel.frames[sel.i][0]);
+      }
+      const shown = new Set(seq).size;
+      const have = (S.atlas(key).anims[row] || []).length;
+      // A dash burst is short and shorter on a light fighter: `dashT` starts counting
+      // at the tap, five of its ticks go to the acceleration ramp before the state is
+      // even `run`, and only then does the row get to show.  Two cells inside that is a
+      // pose every two ticks, which is what a burst should read as.  Everything else
+      // has the whole move to spend its row.
+      const need = Math.min(row === 'dash' ? 2 : 3, have);
+      if (!seq.length) problems.push(`${key}.${row}: the move never drew a frame of its own row`);
+      else if (shown < need) problems.push(`${key}.${row}: ${shown} of ${have} cells shown in ${seq.length} ticks`);
+    }
+  }
+  assert(!problems.length, problems.join('\n        '));
 });
 
 test('movement: a fresh tap bursts, plays the dash row and arms the run', async () => {

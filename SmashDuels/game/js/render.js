@@ -103,7 +103,14 @@ const Sprites = (() => {
     taunt:       { anim: 'taunt1',      step: 5, once: 1 },
     final:       { anim: 'usmash',      step: 4 },
     stun:        { anim: 'hurt',        step: 5 },
-    dash:        { anim: 'dash',        step: 3, once: 1 },
+    /* The row is four cells and a dash burst shows it for four ticks on astra, six on
+       valor, ten on grim: dashT counts down from the tap, and the first five of those
+       ticks are the acceleration ramp, played as `idle`/`walk`.  Two ticks a pose is
+       what fits that window — the whole row for a heavy fighter, the two cells that
+       matter for a light one — and it is purely which tile is on screen: dashT itself
+       still runs at its authored length, so no window, no lock and no pixel of travel
+       moves.  See BUGS.md §J10 for the engine-side version, which was not taken. */
+    dash:        { anim: 'dash',        step: 2, once: 1 },
   };
   /* Moves and specials only name the row — pickAnim plays it by phase.
      `dashattack` used to borrow the run cycle, i.e. a 38-tick lunge drawn as a
