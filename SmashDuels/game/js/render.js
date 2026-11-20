@@ -19,6 +19,7 @@ const Sprites = (() => {
      ============================================================ */
   const KEYS = ['valor', 'grim', 'astra', 'vesper', 'rook'];
   const A = {};                     // key -> {img, meta, tiles, anims, scale}
+  const ITEM_ART = {};              // item key -> {img, w, h, mirror} | false
   const VARIANTS = [
     { hue: 0,   alpha: 0.00, light: 0.00 },  // default palette (sheet art)
     { hue: 200, alpha: 0.24, light: 0.05 },  // blue
@@ -102,7 +103,14 @@ const Sprites = (() => {
     taunt:       { anim: 'taunt1',      step: 5, once: 1 },
     final:       { anim: 'usmash',      step: 4 },
     stun:        { anim: 'hurt',        step: 5 },
-    dash:        { anim: 'dash',        step: 3, once: 1 },
+    /* The row is four cells and a dash burst shows it for four ticks on astra, six on
+       valor, ten on grim: dashT counts down from the tap, and the first five of those
+       ticks are the acceleration ramp, played as `idle`/`walk`.  Two ticks a pose is
+       what fits that window — the whole row for a heavy fighter, the two cells that
+       matter for a light one — and it is purely which tile is on screen: dashT itself
+       still runs at its authored length, so no window, no lock and no pixel of travel
+       moves.  See BUGS.md §J10 for the engine-side version, which was not taken. */
+    dash:        { anim: 'dash',        step: 2, once: 1 },
   };
   /* Moves and specials only name the row — pickAnim plays it by phase.
      `dashattack` used to borrow the run cycle, i.e. a 38-tick lunge drawn as a
@@ -112,13 +120,36 @@ const Sprites = (() => {
      `stilt` is the shared side-swing row the slicer recovers as one sequence. */
   const MOVE_ANIM = {
     jab: 'jab', ftilt: 'stilt', utilt: 'utilt', dtilt: 'dtilt',
-    dashattack: 'stilt', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
+    dashattack: 'dashattack', fsmash: 'ssmash', usmash: 'usmash', dsmash: 'dsmash',
     nair: 'nair', fair: 'fair', bair: 'bair', uair: 'uair', dair: 'dair',
   };
   const SPECIAL_ANIM = { n: 'nspecial', s: 'sspecial', u: 'uspecial', d: 'dspecial' };
+  /* A fighter whose atlas has not had the row injected still animates: rows added by
+     tools/slice_rows.py are optional, and these are what they replace.  Without this a
+     missing `dashattack` row would drop the whole move onto the idle cycle. */
+  const ROW_ALT = { dashattack: 'stilt' };
   const DEFAULT_STEP = 6;
   const STALL_PX = 0.45;          // px/tick below which a stride is not happening
   const TAU2 = Math.PI * 2;
+
+  /* Sub-tick render blend, handed in by the game loop (see ui.js loop → Sprites.beginFrame).
+     Physics is locked to 60 Hz while rAF runs at the panel rate, so on a 120 Hz
+     display two drawn frames share one tick.  `BLEND` is how far into the next
+     tick the frame being drawn sits; it moves the continuous parts of a pose —
+     the bob, the lean, the stride advance — and never the tile table a hitbox is
+     derived from, so the collision timing stays exactly as the sim wrote it.
+     Left at 0 the renderer draws the tick, which is what a 60 Hz monitor sees. */
+  let BLEND = 0;
+  function setBlend(a) { BLEND = a > 0 && a < 1 ? a : 0; }
+
+  /* Cross-cell dissolve (see pickAnim's `mix`).  On by default; `Sprites.setSmooth(0)`
+     turns it off and puts the hard cell cuts back, which is the look a pixel-art
+     purist may prefer, and it is the switch to flip if a ghosting ever looks wrong.
+     SMOOTH_K is how far the dissolve goes before the next tile simply takes over:
+     0.8 leaves a 20% trace of the old pose rather than a hard hand-off. */
+  let SMOOTH = true;
+  const SMOOTH_K = 0.8;
+  function setSmooth(on) { SMOOTH = !!on; }
 
   /* One clock per fighter, keyed on the row being played: switching rows restarts
      it, staying on a row advances it at most once per game tick.  Held in a
@@ -129,7 +160,10 @@ const Sprites = (() => {
     if (!c) { c = { name: null, t: 0, p: 0, tick: -1 }; clocks.set(f, c); }
     const tick = f.animT | 0;
     if (c.name !== name) { c.name = name; c.t = 0; c.p = 0; c.tick = tick; return c; }
-    if (c.tick === tick) return c;                       // same tick, same frame
+    /* Same tick twice — the second draw of a tick on a panel faster than 60 Hz.
+       The pose is not re-advanced (that would double its rate); it is offset by the
+       blend, which is the whole point: the frame lands between the two ticks. */
+    if (c.tick === tick) return blended(f, spec, c);
     const d = tick - c.tick;
     c.tick = tick;
     if (d <= 0) { c.t = 0; c.p = 0; return c; }          // animT reset: respawn, land
@@ -147,7 +181,103 @@ const Sprites = (() => {
         c.p += d / ticks;
       }
     }
-    return c;
+    return blended(f, spec, c);
+  }
+
+  /* ---------------- sub-tick render blend ----------------
+   *
+   * The mirror half of setBlend: positions, not poses.  setBlend moves the continuous
+   * parts of a pose between two ticks; this moves the body itself, and the camera, so a
+   * panel faster than 60 Hz gets a new frame instead of the same tick twice.
+   *
+   * What the frame is drawn at, and why it is a lead and not a lerp: Game.loop steps
+   * the simulation *before* it draws, so `alpha` is the time already spent waiting for
+   * the NEXT tick, not the fraction of a tick left over from the last one.  The tick is
+   * therefore the freshest thing the engine knows, and the correct position is that plus
+   * how far the body will travel before the panel answers.  Interpolating backwards
+   * instead (px + alpha*d, the textbook fixed-step recipe) is only right for a loop that
+   * draws before it steps — here it put every blended frame half a tick behind the frame
+   * before it, and since the short-circuit at alpha = 0 draws the raw tick, a 120 Hz panel
+   * saw the sprite jump forward on the step and slide back on the frame after it:
+   * 117 of 240 frames moving backwards.  Measured, not theorised — tools/animtest.js
+   * asserts on the blit matrix precisely so this cannot silently flip back.
+   *
+   * What is left of the old `LEAD_CAP` is the honesty bound: a body may only be led by
+   * as much as it actually travelled last tick, which stops a wall, a grab or a body
+   * scrubbing itself to a stop from being drawn somewhere the physics will not put it.
+   * The fixed 4px cap on top of that was the stutter — a fighter falling at 12px a tick
+   * had two thirds of its frame thrown away, then handed back on the next tick.  A
+   * velocity that just changed sign is the one case where travel is not evidence, so
+   * that gets no lead at all, and a fighter in hitlag is frozen and skipped outright.
+   *
+   * Returns the undo; the draw pass hands the positions straight back, so the
+   * simulation never sees a number the physics did not produce.  alpha = 0 — a 60 Hz
+   * panel, where there is nothing between the ticks to guess — is a no-op. */
+  const MEMO = new WeakMap();     // entity -> where it stood on the tick it was last drawn
+  function beginFrame(match, alpha) {
+    setBlend(alpha);
+    if (!(alpha > 0) || !match) return null;
+    const moved = [];
+    /* How far this body actually moved on the tick that just ran, measured once per
+       tick (keyed on animT, so a doubled-up catch-up frame still only samples once). */
+    const travelled = (e) => {
+      const tick = e.animT | 0;
+      let m = MEMO.get(e);
+      if (!m) { m = { t: -1 }; MEMO.set(e, m); }
+      if (m.t === tick) return m;
+      m.t = tick;
+      const dx = m.px === undefined ? 0 : e.x - m.px;
+      const dy = m.py === undefined ? 0 : e.y - m.py;
+      m.px = e.x; m.py = e.y; m.dx = dx; m.dy = dy;
+      return m;
+    };
+    const step = (e, vx, vy, bound) => {
+      if (!e || e.hitlag > 0) return;                     // a frozen fighter is not moving
+      if (!Number.isFinite(vx) || !Number.isFinite(vy) || (!vx && !vy)) return;
+      let mx = Infinity, my = Infinity;
+      if (bound) {
+        const m = travelled(e);
+        // a body that just reversed is not going where its velocity says
+        mx = vx * m.dx < 0 ? 0 : Math.abs(m.dx);
+        my = vy * m.dy < 0 ? 0 : Math.abs(m.dy);
+      }
+      const dx = clamp(vx * alpha, -mx, mx);
+      const dy = clamp(vy * alpha, -my, my);
+      if (!dx && !dy) return;
+      moved.push(e, e.x, e.y);
+      e.x += dx; e.y += dy;
+    };
+    for (const f of match.fighters) step(f, f.vx, f.vy, true);
+    for (const it of match.items) if (!it.heldBy) step(it, it.vx, it.vy);
+    for (const pr of match.projectiles) step(pr, pr.vx, pr.vy);
+    for (const su of (match.summons || [])) step(su, su.vx || 0, su.vy || 0);
+    if (match.bag) step(match.bag, match.bag.vx || 0, match.bag.vy || 0);
+    const cam = match.cam;
+    let c = null;
+    if (cam && Number.isFinite(cam.px)) {
+      c = [cam.x, cam.y, cam.zoom];
+      cam.x += (cam.x - cam.px) * alpha;
+      cam.y += (cam.y - cam.py) * alpha;
+      cam.zoom += (cam.zoom - cam.pz) * alpha;
+    }
+    return () => {
+      if (c) { cam.x = c[0]; cam.y = c[1]; cam.zoom = c[2]; }
+      for (let i = 0; i < moved.length; i += 3) { moved[i].x = moved[i + 1]; moved[i].y = moved[i + 2]; }
+      setBlend(0);
+    };
+  }
+
+  /* A looping row gets the fraction of the tick the frame is drawn at; anything
+     with a scripted end (once / fit / hold) is owned by the action's own tick
+     count, because that is what the hit window is measured in. */
+  function blended(f, spec, c) {
+    if (!BLEND || !c || spec.once || spec.fit || spec.hold) return c;
+    const o = { name: c.name, t: c.t + BLEND, p: c.p, tick: c.tick };
+    if (spec.stride) {
+      const px = Math.abs(f.vx || 0);
+      if (px > STALL_PX) o.p = c.p + BLEND / clamp(spec.stride / px, spec.min || 2, spec.max || 14);
+    }
+    return o;
   }
 
   /* Which tile a row should show: loop, hold, once, or fit an action's length. */
@@ -215,7 +345,7 @@ const Sprites = (() => {
      the tiles and the hitbox.  Rows that do have art to play get a fifth of it —
      enough to give the blow weight, not enough to fight the drawing. */
   function attackSwing(f, amp) {
-    const ph = attackPhase(f);
+    const ph = attackPhase(f, BLEND);
     const A = amp;
     /* `sx` is a squash-stretch on top of the pose: below 1 the figure is wound up
        narrow and tall, at 1.1 it is flung long and flat.  Cartoon smear, and the
@@ -255,21 +385,25 @@ const Sprites = (() => {
     return Math.max(0.26, 1 - 0.72 * eased(ph.p));
   }
 
-  function attackPhase(f) {
+  function attackPhase(f, extra = 0) {
     const a = f.action || {};
     const startup = Math.max(1, a.startup | 0 || 4);
     const active = Math.max(1, a.active | 0 || 3);
     const dur = Math.max(startup + active, a.dur | 0 || startup + active + 8);
-    const t = Math.max(0, f.actionT | 0);
+    const t = Math.max(0, (f.actionT | 0) + extra);   // `extra`: sub-tick render blend only
     if (f.charging) return { phase: 0, p: 1 };
     if (t < startup) return { phase: 0, p: t / startup };
     if (t < startup + active) return { phase: 1, p: (t - startup) / active };
     return { phase: 2, p: clamp((t - startup - active) / Math.max(1, dur - startup - active), 0, 1) };
   }
 
+  /* Same reason as `BUILD` in core.js: an atlas whose PNG and JSON come from two
+     different builds draws tiles from the wrong rectangles. */
+  const VQ = '?v=' + (typeof BUILD !== 'undefined' ? BUILD : '0');
+  let atlasWarned = false;
   function load() {
     for (const k of KEYS) {
-      fetch(`assets/atlas/${k}.json`)
+      fetch(`assets/atlas/${k}.json${VQ}`)
         .then(r => (r && r.ok) ? r.json() : Promise.reject(new Error('no atlas ' + k)))
         .then(meta => {
           const img = new Image();
@@ -292,13 +426,57 @@ const Sprites = (() => {
             A[k] = A_;
           };
           img.onerror = () => { A[k] = null; };
-          img.src = `assets/atlas/${k}.png`;
+          img.src = `assets/atlas/${k}.png${VQ}`;
         })
-        .catch(() => { A[k] = null; });
+        .catch(() => {
+          A[k] = null;
+          if (!atlasWarned) {
+            atlasWarned = true;
+            console.warn('[rift] animation atlases did not load — drawing the vector fallback. '
+              + 'Open the game through a local server (python3 -m http.server), not file://, '
+              + 'where the browser will not fetch JSON.');
+          }
+        });
     }
   }
 
   function atlas(key) { return A[key] || null; }
+
+  /* ---------------- item art ----------------
+     Items used to be drawn as a switch of fillRects — a "sword" was a 4px pale bar.
+     That reads as a placeholder at 40px, and it is why an item on the deck is hard
+     to identify at a glance. The sprites in `assets/items/` are real drawings (built
+     by tools/slice_items.py from the generated sheets), and the manifest carries the
+     size each one is drawn at, so the art can be anchored by the renderer rather than
+     guessed at by whoever wrote the icon.
+
+     `false` means "loaded and missing" — items.js keeps the vector icon for those, so
+     a partial or absent art directory degrades instead of blanking. */
+  function loadItems() {
+    if (typeof fetch !== 'function' || typeof Image !== 'function') return;
+    fetch('assets/items/items.json' + VQ)
+      .then((r) => (r && r.ok ? r.json() : Promise.reject(new Error('no item manifest'))))
+      .then((man) => {
+        const items = (man && man.items) || {};
+        const scale = man && man.scale ? man.scale : 2;
+        for (const k in items) {
+          const rec = items[k];
+          const entry = ITEM_ART[k] = { img: null, w: rec.w, h: rec.h, mirror: !!rec.mirror, want: (rec.w * scale) | 0 };
+          const img = new Image();
+          img.onload = () => { entry.img = img; };
+          img.onerror = () => { ITEM_ART[k] = false; };
+          img.src = `assets/items/${rec.file}${VQ}`;
+        }
+      })
+      .catch(() => { ITEM_ART.__failed = true; });
+  }
+
+  /* The sprite for an item key once it is on screen, or null to fall back. */
+  function itemArt(key) {
+    const e = ITEM_ART[key];
+    if (!e || !e.img) return null;
+    return e;
+  }
 
   /* ---------------- art-derived geometry ----------------
      The slicer crops every tile tight to its ink, so a tile's rectangle *is*
@@ -325,7 +503,22 @@ const Sprites = (() => {
     [/^d/, [1, 1]],                      // dtilt / dsmash / dair / dspecial
     [/^n/, [2, 0]],                      // nair / nspecial: both sides count
   ];
+  /* The rows the engine ships are named outright, and the prefix table above is only
+     the fallback.  It has to be, because `dashattack` starts with the same letter the
+     tilts and smashes use for "down": a prefix match turned a forward lunge into a
+     downward blow, so the box grew at the feet while the drawn fist stayed unhit.  The
+     dash attack used to borrow the `stilt` row, which hid that; giving it its own art
+     is what made the two disagree out loud. */
+  const ROW_DIR_NAMED = {
+    jab: [0, 1], ftilt: [0, 1], stilt: [0, 1], dtilt: [1, 1], utilt: [1, -1],
+    dashattack: [0, 1], dash: [0, 1], fsmash: [0, 1], ssmash: [0, 1], usmash: [1, -1],
+    dsmash: [1, 1], nair: [2, 0], fair: [0, 1], bair: [0, -1], uair: [1, -1],
+    dair: [1, 1], nspecial: [2, 0], sspecial: [0, 1], uspecial: [1, -1], dspecial: [1, 1],
+    spotdodge: [0, 1], rollfwd: [0, 1], rollback: [0, -1], airdodge: [0, 1],
+  };
   function rowDir(name) {
+    const n = ROW_DIR_NAMED[name];
+    if (n) return n;
     for (const [re, d] of ROW_DIR) if (re.test(name)) return d;
     return [0, 1];                       // forward: jab, tilts, smashes, fair, dash
   }
@@ -399,6 +592,31 @@ const Sprites = (() => {
         const b = frameBox(at, ent);
         return b && usable(at, b.body, name) ? b.body : null;
       });
+      /* meta.geo / meta.geoBody — the geometry a row is *judged* by, when that is not the
+         row's own ink.  Everything here gives the drawing a vote on the hitbox and on the
+         hurtbox, which is right for a sheet cut by hand and wrong for a re-skin: drop a new
+         sheet over an old one and the sword gets longer, the resting pose gets wider, and a
+         jab quietly loses the extension it used to gain past the silhouette (a wider idle
+         swallows the reach a swing lived on).  So a re-skin carries the extents of the art
+         it replaced, captured by tools/atlas_geo.js before the pixels move, and only the
+         picture changes underneath it.  Rows the atlas does not name are measured as usual,
+         so hand-cut art still follows its own drawing. */
+      const geo = (name, cur) => {
+        const g = at.meta && at.meta[name];
+        const row = g && g[an];
+        if (!row || !row.length) return cur;
+        const m = row.length;
+        /* The new sheet does not have to run the same number of frames — 8 idles over a
+           6-frame row still describes the same blow — so the old extents are sampled
+           across the new length rather than truncated. */
+        return Array.from({ length: fl.length }, (_, i) => {
+          const b = row[m === fl.length ? i : Math.round(i * (m - 1) / Math.max(1, fl.length - 1))];
+          return b ? b.slice(0) : null;
+        });
+      };
+      const an = name;
+      at.box[an] = geo('geo', at.box[an]);
+      at.bodyBox[an] = geo('geoBody', at.bodyBox[an]);
       const d = rowDir(name);
       /* Reach is signed, and "further along the blow" always wins.  The vertical
          axis has to negate: the frame that paints furthest UP is the one with the
@@ -575,6 +793,10 @@ const Sprites = (() => {
     if (f.stunT > 120 && f.shieldHP <= 0) { name = 'shieldbreak'; spec = STATE_ANIM.shieldbreak; }
     if (f.state === 'stun') { name = 'hurt'; spec = STATE_ANIM.stun; }
     let frames = at.anims[name];
+    if ((!frames || !frames.length) && ROW_ALT[name]) {
+      name = ROW_ALT[name];
+      frames = at.anims[name];
+    }
     if ((!frames || !frames.length) && spec && spec.fallback) {
       const alt = at.anims[spec.fallback];
       if (alt && alt.length) frames = alt;
@@ -594,7 +816,21 @@ const Sprites = (() => {
       if (spec.pulse) wob = Math.sin(c.t * 0.085) * spec.pulse;
     }
     const prog = spec.stride ? c.p : c.t / Math.max(1, spec.step || DEFAULT_STEP);
-    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, swing,
+    /* Smooth transitions between sprite cells.  A loop row is a handful of tiles and
+       the clock lands on whole ones, so the pose holds for 4-6 ticks and then changes
+       instantly — with 8-frame rows now on every sheet, that hold is the only thing
+       left that reads as stepping.  `mix` says how far into the current tile this frame
+       sits and which tile follows it, so the draw can dissolve one into the other over
+       the back half of the hold: the pose stays crisp for the first half of its life
+       (that is what makes a frame readable) and is never 50/50 with its neighbour.
+       Loops only.  A strike tile IS the hit window, and fading it into the
+       follow-through is how you get a fighter that visually whiffs a connected move. */
+    let mix = null;
+    if (!phase && n > 2 && !spec.once && !spec.hold && !spec.fit && SMOOTH) {
+      const fr = prog - Math.floor(prog);
+      if (fr > 0.5) mix = { j: (i + 1) % n, f: SMOOTH_K * (fr - 0.5) / 0.5 };
+    }
+    return { at, name, frames, i: clamp(i, 0, n - 1), wob, prog, clock: c.t, swing, mix,
       vfx: phase ? vfxGate(f) : 1,
       phase: phase || undefined };
   }
@@ -1143,10 +1379,11 @@ const Sprites = (() => {
        with the fighter instead of drifting out of sync with it. */
     const moving = (f.state === 'walk' || f.state === 'run' || f.state === 'turn');
     const tk = f.animT | 0;                       // game ticks, never wall clock
+    const ft = sel.clock === undefined ? tk : sel.clock;   // fractional: glides between ticks
     const step = (sel.prog || 0) % 1;
-    const bob = f.state === 'idle' ? Math.sin(tk * 0.052 + f.id) * 0.7
+    const bob = f.state === 'idle' ? Math.sin(ft * 0.052 + f.id) * 0.7
       : f.state === 'turn' ? -0.7
-      : moving ? (0.5 - Math.abs(step - 0.5)) * -2.8 : 0;
+      : moving ? (0.5 - Math.abs(step - 0.5)) * -2.8 : 0;   // stride-synced, so already fractional
     const dashing = (f.dashT | 0) > 0;
     let lean = f.state === 'run' ? (dashing ? 0.14 : 0.05) : 0;
     if (f.state === 'turn') lean = -0.07;                     // leaning on the brakes
@@ -1195,8 +1432,13 @@ const Sprites = (() => {
     // roll spin (the sliced roll rows are a 2-frame tumble; finish the arc)
     if (f.state === 'roll') {
       const k = clamp((f.actionT || 0) / ((f.action && f.action.dur) || 26), 0, 1);
+      /* How much of the turn the row leaves to finish.  The sheets drew two poses, so
+         the renderer used to carry the whole revolution; a row with four real tumbles
+         (tools/slice_rows.py injects those) already shows most of it, and spinning a
+         full turn on top of that turns the roll into a washing machine. */
+      const rest = (sel.frames && sel.frames.length >= 4) ? 0.25 : 1;
       ctx.translate(0, -h * 0.5);
-      ctx.rotate(k * TAU * ((f.rollDir || f.facing) > 0 ? 1 : -1));
+      ctx.rotate(k * TAU * rest * ((f.rollDir || f.facing) > 0 ? 1 : -1));
       ctx.translate(0, h * 0.5);
     }
     if (f.state === 'ledge') { ctx.translate(0, 5); ctx.rotate(0.05); }
@@ -1204,7 +1446,19 @@ const Sprites = (() => {
     const stx = sw && sw.sx ? sw.sx : 1;
     ctx.scale(dir * squash * stx * s, (2 - squash) / stx * s);
     if (lean) ctx.rotate(lean * dir);
-    blit(ctx, at, src, ent, false, sel.vfx);
+    if (sel.mix && sel.frames[sel.mix.j]) {
+      /* Two cells of the same row, one dissolve: the ink fades across, the baked glow
+         keeps burning at full strength underneath it (see blit's `only`). */
+      const pa = ctx.globalAlpha;
+      ctx.globalAlpha = pa * (1 - sel.mix.f);
+      blit(ctx, at, src, ent, false, 0, 'body');
+      ctx.globalAlpha = pa * sel.mix.f;
+      blit(ctx, at, src, sel.frames[sel.mix.j], false, 0, 'body');
+      ctx.globalAlpha = pa;
+      blit(ctx, at, src, ent, false, sel.vfx, 'vfx');
+    } else {
+      blit(ctx, at, src, ent, false, sel.vfx);
+    }
     ctx.restore();                    // also drops the metal filter
 
     // ---- shield bubble: a readable dome, not a sprite-wide glow (a big
@@ -1240,15 +1494,19 @@ const Sprites = (() => {
   }
 
   /* Body tile first, then any baked VFX additively so crescents glow. */
-  function blit(ctx, at, src, ent, flashPass, vfx) {
+  /* `only` picks a layer: 'body' for the ink alone, 'vfx' for the baked glow, and
+     nothing for both.  A cross-dissolve between two cells of a row needs it — the ink
+     is what should fade, while the glow is light and is already composited 'lighter',
+     so fading it with the tile makes a gauntlet wink on and off mid-stride. */
+  function blit(ctx, at, src, ent, flashPass, vfx, only) {
     const draw = (part) => {
       const t = at.tiles[part[0]];
       if (!t) return;
       ctx.drawImage(src, t.x, t.y, t.w, t.h, -part[1], -part[2], t.w, t.h);
     };
-    draw(ent);
+    if (only !== 'vfx') draw(ent);
     const fx = ent[3] || [];
-    if (!fx.length) return;
+    if (!fx.length || only === 'body') return;
     const k = vfx === undefined ? 1 : clamp(vfx, 0, 1);
     if (k <= 0.02) return;                  // not yet: the body alone is the pose
     const prev = ctx.globalCompositeOperation, pa = ctx.globalAlpha;
@@ -1261,7 +1519,8 @@ const Sprites = (() => {
 
   return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
     atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
-    STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
+    loadItems, itemArt, ITEM_ART,
+    setBlend, setSmooth, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 
 /* ============================================================
@@ -1430,6 +1689,90 @@ const Backdrop = (() => {
         ctx.fillStyle = withAlpha('#22e08a', 0.35);
         ctx.fillRect(bx + 105, -300, 30, 16);
       }
+    } else if (theme === 'island') {
+      /* The Battlefield decks: a floating slab in open sky, so the background is the
+         thing that says "arena" — a wide horizon of cloud below the stage and one
+         large distant planet, both of which the camera parallaxes slowly past. */
+      ctx.globalAlpha = 0.5;
+      const pgx = -520 + par(0.05), pgy = -560;
+      const pr = 210;
+      const pg = ctx.createRadialGradient(pgx - pr * 0.3, pgy - pr * 0.35, pr * 0.2, pgx, pgy, pr);
+      pg.addColorStop(0, withAlpha(stage.accent, 0.5));
+      pg.addColorStop(0.7, withAlpha(stage.accent, 0.14));
+      pg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(pgx, pgy, pr, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 0.24;
+      ctx.strokeStyle = withAlpha('#ffffff', 0.5); ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(pgx, pgy + 20, pr * 1.5, pr * 0.32, -0.32, 0, TAU); ctx.stroke();
+      // cloud sea under the deck
+      for (let i = 0; i < 9; i++) {
+        const bx = -1500 + i * 380 + par(0.07);
+        const by = 300 + hash(i) * 90;
+        ctx.globalAlpha = 0.10 + hash(i + 5) * 0.16;
+        ctx.fillStyle = '#dcecff';
+        ctx.beginPath(); ctx.ellipse(bx, by, 240 + hash(i) * 120, 34 + hash(i + 2) * 20, 0, 0, TAU); ctx.fill();
+      }
+    } else if (theme === 'arena') {
+      /* The stadium bowl: floodlights and a terraced crowd, drawn as bands of dots so
+         it reads as a crowd rather than noise, and moves at a tenth of the camera. */
+      ctx.globalAlpha = 0.5;
+      for (let i = 0; i < 7; i++) {
+        const bx = -1400 + i * 470 + par(0.09);
+        ctx.fillStyle = withAlpha('#0d1a24', 0.9);
+        ctx.fillRect(bx, -240, 26, 420);
+        ctx.fillStyle = withAlpha(stage.accent, 0.5);
+        ctx.fillRect(bx - 30, -250, 86, 18);
+        ctx.globalAlpha = 0.16;
+        const lg = ctx.createRadialGradient(bx, -230, 10, bx, -230, 420);
+        lg.addColorStop(0, withAlpha(stage.accent, 0.4)); lg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = lg; ctx.fillRect(bx - 400, -240, 800, 600);
+        ctx.globalAlpha = 0.5;
+      }
+      for (let band = 0; band < 4; band++) {
+        const by = -120 + band * 62;
+        for (let i = 0; i < 46; i++) {
+          const bx = -1420 + i * 64 + par(0.12 + band * 0.01) + (band % 2) * 22;
+          ctx.globalAlpha = 0.14 + hash(i * 7 + band) * 0.3;
+          ctx.fillStyle = hash(i + band * 13) > 0.72 ? stage.accent : '#8ea6bd';
+          ctx.fillRect(bx, by + Math.sin(i * 1.7 + band) * 4, 5, 5);
+        }
+      }
+    } else if (theme === 'city') {
+      /* Town & City: two skylines at different depths and the street itself, with a
+         car running along it.  The traffic is scenery here, not a hazard — the deck it
+         drives on is where the fighters are standing, so nothing on it can damage them
+         without becoming a stage gimmick the platform physics has no room for. */
+      for (let layer = 0; layer < 2; layer++) {
+        const k = layer ? 0.16 : 0.09;
+        ctx.globalAlpha = layer ? 0.55 : 0.32;
+        for (let i = 0; i < 14; i++) {
+          const bw = 90 + hash(i * 3 + layer) * 90;
+          const bx = -1500 + i * 226 + hash(i + layer * 7) * 60 + par(k);
+          const bh = 220 + hash(i * 5 + layer) * 420;
+          ctx.fillStyle = layer ? '#182437' : '#111a2a';
+          ctx.fillRect(bx, -bh, bw, bh + 260);
+          ctx.fillStyle = withAlpha('#ffd166', layer ? 0.5 : 0.25);
+          for (let wy = 0; wy < 9; wy++) {
+            for (let wx2 = 0; wx2 < 3; wx2++) {
+              if (hash(i * 31 + wy * 7 + wx2 + layer * 3) > 0.62) ctx.fillRect(bx + 12 + wx2 * 26, -bh + 26 + wy * 44, 12, 16);
+            }
+          }
+        }
+      }
+      // the street, and something driving along it
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = '#1a2230';
+      ctx.fillRect(-1600, 150, 3200, 120);
+      ctx.fillStyle = withAlpha('#ffd166', 0.5);
+      for (let i = 0; i < 22; i++) ctx.fillRect(-1500 + i * 150 + ((time * 0.9) % 150), 206, 46, 5);
+      const carX = ((time * 1.5) % 3600) - 1700;
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = '#e8556d';
+      ctx.fillRect(carX, 176, 82, 26);
+      ctx.fillRect(carX + 16, 162, 44, 18);
+      ctx.fillStyle = withAlpha('#fff6c8', 0.9);
+      ctx.fillRect(carX + 76, 182, 10, 6);
     }
     ctx.restore();
 

@@ -123,6 +123,32 @@ test('atlas: one tile per distinct drawing, reused by id', () => {
     // dedup contract: no two tiles share an identical rect
     const rects = new Set(meta.tiles.map(t => `${t.x},${t.y},${t.w},${t.h}`));
     assert(rects.size === meta.tiles.length, `${key}: duplicate tile rects in the atlas (${meta.tiles.length - rects.size})`);
+    // and no two rects may overlap at all: tiles are pasted into one PNG, so an
+    // overlapping pair means one drawing was painted on top of the other, and both
+    // animations now show a piece of the wrong pose.  tools/slice_rows.py packs into
+    // whatever the roster left free, and a packer that forgets the used space does
+    // exactly this — while every other check still passes, because the geometry is fine.
+    const t2 = meta.tiles;
+    const live = new Set();
+    for (const frames of Object.values(Object.assign({}, meta.anims, meta.derived))) {
+      for (const ent of frames) {
+        live.add(ent[0]);
+        for (const fx of ent[3] || []) live.add(fx[0]);
+      }
+    }
+    const hits = [];
+    for (let i = 0; i < t2.length && hits.length < 4; i++) {
+      if (!live.has(i)) continue;
+      for (let j = i + 1; j < t2.length; j++) {
+        if (!live.has(j)) continue;
+        const a = t2[i], b = t2[j];
+        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
+          hits.push(`${i}\u00b7${j}`);
+          break;
+        }
+      }
+    }
+    assert(!hits.length, `${key}: ${hits.length} tile rects overlap another tile (first: ${hits.slice(0, 4).join(', ')})`);
   }
 });
 
@@ -386,6 +412,110 @@ test('renderer: palettes tint without touching the source atlas', () => {
       }
       assert(at.img.width + 'x' + at.img.height === before, `${f.key}: source image mutated`);
     }
+  });
+});
+
+/* ---------------- the build the browser actually fetches ---------------- */
+/* A static host with no Cache-Control lets a tab reuse a script it fetched yesterday, so
+   the version query on every subresource is what makes "I fixed it" observable in the
+   browser instead of only in the test runner.  This checks the promise, because the
+   failure mode of forgetting to bump it is a user playing an old build and reporting a
+   bug that is already fixed — which has happened. */
+test('build: every subresource index.html loads is versioned to the current build', () => {
+  const html = fs.readFileSync(path.join(GAME, 'index.html'), 'utf8');
+  const core = fs.readFileSync(path.join(GAME, 'js', 'core.js'), 'utf8');
+  const m = core.match(/const BUILD = '([^']+)'/);
+  assert(m, 'core.js no longer defines BUILD');
+  const build = m[1];
+  const linked = [...html.matchAll(/<script src="(js\/[^"]+)"/g)].map((x) => x[1]);
+  assert(linked.length >= 10, `index.html links ${linked.length} scripts`);
+  const stale = linked.filter((src) => !src.endsWith('?v=' + build));
+  assert(!stale.length, `scripts linked without the current build token: ${stale.join(', ')}`);
+  const css = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((x) => x[1]);
+  assert(css.length && css.every((c) => c.endsWith('?v=' + build)), `stylesheet not versioned: ${css.join(', ')}`);
+  // every file in js/ is linked, and core.js is first (everything else reads its consts)
+  const files = fs.readdirSync(path.join(GAME, 'js')).filter((f) => f.endsWith('.js')).sort();
+  const named = linked.map((src) => src.split('?')[0].replace('js/', '')).sort();
+  assert(JSON.stringify(named) === JSON.stringify(files), `js/ and index.html disagree:\n        linked ${named.join(',')}\n        on disk ${files.join(',')}`);
+  assert(linked[0].startsWith('js/core.js?'), 'core.js must be the first script');
+  // the atlases and item art are fetched from JS, and a PNG from one build with a JSON
+  // from another draws tiles out of the wrong rectangle
+  const render = fs.readFileSync(path.join(GAME, 'js', 'render.js'), 'utf8');
+  assert(/const VQ = '\?v=' \+ \(typeof BUILD/.test(render), 'render.js does not derive its asset query from BUILD');
+  for (const pat of ['assets/atlas/${k}.json${VQ}', 'assets/atlas/${k}.png${VQ}', "assets/items/items.json' + VQ", 'assets/items/${rec.file}${VQ}']) {
+    assert(render.includes(pat), `render.js fetches \`${pat.split('$')[0]}\` without the version: ${pat}`);
+  }
+});
+
+/* ---------------- decks ---------------- */
+/* The harness ctx paints with noops, so a NaN in a background shape would sail through
+   untouched and only throw in the browser.  Watching the numeric arguments of every
+   drawing call is what makes a per-deck render test mean something — and it is the
+   guard the copied Ultimate decks needed, whose backdrops are new geometry. */
+function watchOps(ctx) {
+  const bad = [];
+  const METHODS = ['fillRect', 'strokeRect', 'clearRect', 'drawImage', 'arc', 'arcTo', 'ellipse',
+    'rect', 'roundRect', 'moveTo', 'lineTo', 'quadraticCurveTo', 'bezierCurveTo', 'fillText', 'strokeText'];
+  for (const k of METHODS) {
+    const orig = ctx[k];
+    if (typeof orig !== 'function') continue;
+    ctx[k] = function (...a) {
+      for (let i = 0; i < a.length; i++) {
+        if (typeof a[i] === 'number' && !Number.isFinite(a[i])) { bad.push(`${k} arg ${i} = ${a[i]}`); break; }
+      }
+      return orig.apply(this, a);
+    };
+  }
+  for (const k of ['createLinearGradient', 'createRadialGradient']) {
+    const orig = ctx[k];
+    if (typeof orig !== 'function') continue;
+    ctx[k] = function (...a) {
+      // a real canvas throws on a NaN or negative radius; the stub would just build it
+      for (const v of a) if (!Number.isFinite(v)) { bad.push(`${k} arg = ${v}`); break; }
+      if (k === 'createRadialGradient' && (a[2] < 0 || a[5] < 0)) bad.push(`${k} negative radius`);
+      return orig.apply(this, a);
+    };
+  }
+  return bad;
+}
+
+test('decks: every stage exists, and every backdrop theme paints without a bad number', () => {
+  return bootRoster().then(() => {
+    const h = boot({ render: true, record: true });
+    h.g.Sprites.load();
+    return h.settle(12).then(() => {
+      const { STAGES, Backdrop } = h.g;
+      const keys = Object.keys(STAGES);
+      assert(keys.length >= 16, `only ${keys.length} decks — the copied Ultimate forms should be in the picker`);
+      const rec = { ops: [] };
+      const ctx = makeCtx(rec);
+      const bad = watchOps(ctx);
+      const themes = new Set();
+      for (const k of keys) {
+        themes.add(STAGES[k].theme);
+        const m = newMatch(h.ctx, cast(5, KEYS, { cpu: false }), k, { state: 'play' });
+        m.readPlayerInput = (f) => f.__raw || {};      // no keyboard is bound in a headless run
+        for (let i = 0; i < 6; i++) {
+          m.cam.x = -600 + i * 260; m.cam.y = -320 + i * 90; m.cam.zoom = 0.6 + i * 0.1;
+          m.update();
+          rec.ops.length = 0;
+          Backdrop.draw(ctx, m.stage, m.cam, m.time);
+        }
+      }
+      assert(!bad.length, `${bad.length} bad drawing arguments: ${bad.slice(0, 6).join(' | ')}`);
+      const missing = keys.filter(k => !themes.has(STAGES[k].theme));
+      assert(!missing.length, 'unthemed decks: ' + missing.join(','));
+      // each deck must actually paint something (an empty backdrop is a silent regression)
+      for (const k of keys) {
+        const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), k, { state: 'play' });
+        m.readPlayerInput = (f) => f.__raw || {};
+        rec.ops.length = 0;
+        Backdrop.draw(ctx, m.stage, m.cam, 1000);
+        const painted = rec.ops.filter(o => o.op === 'set' || o.op === 'drawImage').length;
+        assert(painted > 4, `${k}: its backdrop painted ${painted} state changes — that is a theme nobody drew`);
+      }
+      console.log(`        (${keys.length} decks, ${themes.size} backdrop themes)`);
+    });
   });
 });
 

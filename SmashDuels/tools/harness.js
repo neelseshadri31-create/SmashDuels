@@ -143,7 +143,8 @@ function makeSandbox(opts = {}) {
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
     requestAnimationFrame: noop, cancelAnimationFrame: noop,
     fetch: (url) => {
-      const rel = String(url).replace(/^\/+/, '').replace(/^\.\//, '');
+      // ?v=<build> is part of the real URL, so the shim has to look past it too
+      const rel = String(url).replace(/^\/+/, '').replace(/^\.\//, '').replace(/[?#].*$/, '');
       const file = path.join(assets, rel);
       if (!file.startsWith(assets) || !fs.existsSync(file)) return Promise.resolve({ ok: false, status: 404, json: () => Promise.reject(new Error('missing ' + rel)), text: () => Promise.resolve('') });
       const text = fs.readFileSync(file, 'utf8');
@@ -159,7 +160,7 @@ function makeSandbox(opts = {}) {
       get src() { return this._src; }
       set src(v) {
         this._src = v;
-        const file = path.join(assets, String(v).replace(/^\/+/, ''));
+        const file = path.join(assets, String(v).replace(/^\/+/, '').replace(/[?#].*$/, ''));
         queueMicrotask(() => {
           if (fs.existsSync(file)) {
             const { w, h } = pngSize(fs.readFileSync(file));

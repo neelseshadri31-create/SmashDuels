@@ -154,6 +154,231 @@ test('sides: a fighter shoved past the side blast zone is KO’d', () => {
   assert(ko, 'fighter shoved off the side was never KO’d');
 });
 
+/* =================== vs-4: the sides of the stage ===================
+   Playtest report: "in 4-player a character gets stuck on the sides".  Two things
+   made that happen and both are cheap to prove: the crowd solver could not resolve
+   a pile at a stage edge (its push and Fighter.confine undid each other), and a
+   fighter shoved a few px past the deck face was caught by a ledge-hang whose only
+   exit was a button press. */
+function packAtWall(m, side) {
+  const gd = m.stage.ground;
+  const wall = side < 0 ? gd.x : gd.x + gd.w;
+  m.fighters.forEach((f, i) => {
+    f.x = wall - side * (30 + i * 12); f.y = gd.y; f.vx = 0; f.vy = 0;   // packed just inside the face
+    f.onGround = true; f.onPlatform = null; f.state = 'idle'; f.onGround = true;
+    f.hitstun = 0; f.hitlag = 0; f.shieldHP = 0; f.grabbedBy = null; f.held = null;
+    f.invincT = 0; f.spawnProtect = 0; f.ledge = null; f.ledgeCD = 0; f.ledgeInvuln = 0;
+    f.facing = -side; f.facing = side < 0 ? 1 : -1;
+  });
+  return wall;
+}
+const deepOverlap = (m) => {
+  let worst = 0;
+  for (let a = 0; a < m.fighters.length; a++) for (let b = a + 1; b < m.fighters.length; b++) {
+    const A = m.fighters[a], B = m.fighters[b];
+    if (A.eliminated || B.eliminated) continue;
+    if (Math.abs(A.y - B.y) > 44 * (A.scale + B.scale)) continue;
+    worst = Math.max(worst, 26 * (A.scale + B.scale) + 8 - Math.abs(B.x - A.x));
+  }
+  return worst;
+};
+
+test('sides: a packed 4-player pile at the wall unwinds and walks nobody off the deck', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'vesper', 'rook']), 'skyshrine');
+  const gd = m.stage.ground;
+  packAtWall(m, -1);
+  const c = control(m, () => ({}));                      // nobody presses anything
+  let deepRun = 0, worstRun = 0, ledge = 0;
+  for (let i = 0; i < 240; i++) {
+    c.tick(1);
+    deepRun = deepOverlap(m) > 30 ? deepRun + 1 : 0;
+    worstRun = Math.max(worstRun, deepRun);
+    for (const f of m.fighters) {
+      if (f.state === 'ledge') ledge++;
+      assert(f.x > gd.x - 20, `a fighter was shoved off the deck by the pile: x=${f.x.toFixed(1)}`);
+      assert(!f.eliminated, 'a fighter was KO’d by their own pile');
+    }
+  }
+  assert(worstRun < 24, `the pile stayed welded together for ${worstRun} frames at the wall`);
+  assert(ledge === 0, `${ledge} frames of ledge-hangs from a crowd that never left the ground`);
+});
+
+test('sides: holding into the wall cannot park you in a ledge-hang', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'vesper', 'rook']), 'skyshrine');
+  packAtWall(m, -1);
+  const me = m.fighters[0];
+  const c = control(m, (f, k) => (k === 0 ? { left: true } : {}));   // P1 presses into the wall
+  let hang = 0, worst = 0;
+  for (let i = 0; i < 240; i++) {
+    c.tick(1);
+    hang = me.state === 'ledge' ? hang + 1 : 0;
+    worst = Math.max(worst, hang);
+  }
+  assert(worst <= 96, `a ledge-hang lasted ${worst} frames (1.6s of not being in the fight)`);
+});
+
+test('ledge: a hang nobody presses a button for still ends', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['astra']), 'skyshrine');
+  const gd = m.stage.ground;
+  const f = m.fighters[0];
+  f.x = gd.x - 12; f.y = gd.y + 18; f.vx = 0; f.vy = 2; f.onGround = false;
+  f.state = 'fall'; f.hitstun = 0; f.ledgeCD = 0;
+  m.readPlayerInput = () => ({});
+  let hang = 0;
+  for (let i = 0; i < 160; i++) {
+    m.update();
+    if (f.state === 'ledge') hang++;
+  }
+  assert(hang > 4, 'the fighter never even caught the ledge — the grab test is broken');
+  assert(hang < 100, `the hang lasted ${hang} frames; a hang with no input must auto-get-up`);
+  assert(f.onGround && f.x > gd.x + 8, `the get-up left them off-stage (x=${f.x.toFixed(0)} onGround=${f.onGround})`);
+});
+
+test('ledge: a fighter standing over solid deck is never caught by one', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['rook']), 'skyshrine');
+  const gd = m.stage.ground;
+  const f = m.fighters[0];
+  // parked just inside the face, airborne for a moment (a hop off the deck)
+  f.x = gd.x + 6; f.y = gd.y - 6; f.vx = 0; f.vy = 1; f.onGround = false; f.state = 'fall';
+  f.ledgeCD = 0;
+  m.readPlayerInput = () => ({});
+  for (let i = 0; i < 12; i++) {
+    f.x = gd.x + 6; f.y = gd.y - 6 - i; f.onGround = false; f.state = 'fall';
+    m.update();
+    assert(f.state !== 'ledge', 'a fighter over the deck was snapped into a ledge-hang');
+  }
+});
+
+/* =================== platforms: standing on a block ===================
+   Playtest report: "collision problems with the blocks and things".  Movers were
+   integrated but their travel was never handed to whatever was riding them. */
+test('platforms: a fighter rides the Ember Foundry lift', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'foundry');
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'x');
+  assert(p, 'the foundry lift is gone from the stage data');
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  let slipped = 0, fell = 0;
+  for (let i = 0; i < 260; i++) {
+    const py = p.cy !== undefined ? p.cy : p.y;
+    if (!f.onPlatform || Math.abs(f.y - py) > 4) {
+      f.x = p.cx + p.w / 2; f.y = py; f.vx = 0; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'idle';
+    }
+    m.update();
+    const cx = p.cx + p.w / 2;
+    if (Math.abs(f.x - cx) > 2.5) slipped = Math.max(slipped, Math.abs(f.x - cx));
+    if (!f.onPlatform) fell++;
+  }
+  assert(slipped < 4, `the lift slid ${slipped.toFixed(1)}px out from under the fighter`);
+  assert(fell <= 2, `the fighter left the lift ${fell} times while standing still on it`);
+});
+
+test('platforms: a rising block does not bounce a standing fighter', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['vesper']), 'cometreach');
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'y');
+  assert(p, 'cometreach has no vertical mover');
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  f.x = p.cx + p.w / 2; f.y = p.cy; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'idle';
+  let maxJump = 0, off = 0;
+  for (let i = 0; i < 260; i++) {
+    const py0 = f.y;
+    m.update();
+    maxJump = Math.max(maxJump, Math.abs(f.y - py0));
+    off = Math.max(off, Math.abs(f.y - p.cy));
+    if (!f.onGround) off += 0;                            // counted below via maxJump
+  }
+  assert(maxJump < Math.abs(2 * (p.move.amp * p.move.speed)) + 2.2,
+    `the block yanked the fighter ${maxJump.toFixed(2)}px in one frame`);
+  assert(off < 3, `the fighter came ${off.toFixed(2)}px off the block's surface`);
+});
+
+test('platforms: dropping through a block never drops you through the floor', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['grim']), 'skyshrine');
+  const gd = m.stage.ground;
+  const p = m.stage.platforms[0];
+  const f = m.fighters[0];
+  f.x = p.x + p.w / 2; f.y = p.y; f.vx = 0; f.vy = 0; f.onGround = true; f.onPlatform = p; f.state = 'crouch';
+  m.readPlayerInput = (fr) => (fr.__raw || {});
+  f.__raw = { down: true };
+  m.update();                                             // the crouch sets up the drop
+  f.__raw = { down: true, jump: true };
+  let below = false, landed = -1;
+  for (let i = 0; i < 120 && landed < 0; i++) {
+    f.__raw = {};
+    m.update();
+    if (f.y > gd.y + gd.h) below = true;
+    if (f.onGround && f.y >= gd.y - 1) landed = i;
+  }
+  assert(!below, 'the fighter fell out through the stage deck');
+  assert(landed >= 0, `never came back down onto the deck (y=${f.y.toFixed(0)} state=${f.state})`);
+});
+
+test('items: an item on a moving lift rides it, then falls when the lift leaves', () => {
+  const { ctx, g } = run();
+  const m = newMatch(ctx, cast(1, ['astra']), 'foundry', { rules: { items: 'off' } });
+  const p = m.stage.platforms.find(q => q.move && q.move.axis === 'x');
+  const gd = m.stage.ground;
+  const it = m.spawnItem('bobomb', p.cx + p.w / 2, p.cy - 200);
+  assert(it, 'spawnItem returned nothing');
+  m.readPlayerInput = () => ({});
+  let hung = 0, supported = true, tracked = 0;
+  for (let i = 0; i < 300; i++) {
+    m.update();
+    if (it.dead) break;
+    const overPlat = it.x > p.x && it.x < p.x + p.w;
+    const overDeck = it.x > gd.x - 20 && it.x < gd.x + gd.w + 20;
+    if (it.onGround && !overPlat && !overDeck) hung++;
+    if (it.onGround && overPlat && Math.abs(it.y - (p.cy - 8)) > 6) hung++;
+    tracked = Math.max(tracked, Math.abs(it.x - (p.cx + p.w / 2)));
+    supported = !it.onGround || overPlat || overDeck;
+  }
+  assert(hung === 0, `an item rested on nothing for ${hung} frames`);
+  assert(supported, 'the item ended up floating off any surface');
+});
+
+test('hazards: the bamboo pillar hits once per rise, not once per frame', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['rook']), 'hollow', { rules: { hazards: true } });
+  const gd = m.stage.ground, hz = m.stage.hazard;
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  for (let i = 0; i < hz.period; i++) {                              // exactly one rise
+    f.x = hz.x; f.y = gd.y; f.vx = 0; f.vy = 0; f.onGround = true; f.state = 'idle';
+    f.hitstun = 0; f.hitlag = 0; f.shieldHP = 60;         // parked in the beam, shield up
+    m.update();
+  }
+  assert(!f.eliminated, 'standing in the pillar KO’d the fighter');
+  assert(f.damage <= hz.dmg * 1.5,
+    `the pillar did ${f.damage.toFixed(0)}% to a fighter standing in it for one rise (dmg ${hz.dmg})`);
+});
+
+test('hazards: lava burns on a rhythm, not every frame', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'foundry', { rules: { hazards: true } });
+  const hz = m.stage.hazard;
+  const f = m.fighters[0];
+  m.readPlayerInput = () => ({});
+  f.y = hz.y + 8; f.vy = 0; f.x = 0; f.onGround = false;
+  let hits = 0, prev = 0;
+  for (let i = 0; i < 120; i++) {
+    f.y = hz.y + 8; f.vy = 0; f.hitstun = 0; f.state = 'fall';
+    m.update();
+    if (f.damage > prev) hits++;
+    prev = f.damage;
+    if (f.eliminated || f.stocks < 3) break;
+  }
+  assert(hits > 0, 'the lava never burned anybody');
+  assert(hits <= 4, `the lava hit ${hits} times in 120 frames — that is a shredder, not a hazard`);
+});
+
 /* =================== facing =================== */
 test('facing: a back-roll keeps the fighter turned toward the opponent', () => {
   const { ctx } = run();
@@ -233,11 +458,15 @@ test('states: jump / land / crouch / fall are all reachable and settle', () => {
   const m = newMatch(ctx, cast(1, ['rook']), 'hollow');
   const f = m.fighters[0];
   m.readPlayerInput = (fr) => fr.__raw || {};
+  const gd = m.stage.ground;
+  // spawn x is randomised, and where you land decides how long `land` lasts — so the
+  // pose starts on the deck centre and the crouch window is wider than any landing
+  f.x = gd.x + gd.w / 2;
   f.y = m.stage.ground.y - 320; f.vy = 0; f.onGround = false;
   const seen = new Set();
   for (let i = 0; i < 400; i++) {
     const t = i % 80;
-    f.__raw = { jump: t === 0, down: t > 40 && t < 60, left: t > 10 && t < 30, right: t > 60 };
+    f.__raw = { jump: t === 0, down: t > 34 && t < 76, left: t > 10 && t < 30, right: t > 60 };
     m.update();
     seen.add(f.state);
     assert(Number.isFinite(f.x) && Number.isFinite(f.y), 'NaN in ' + f.state);
@@ -289,13 +518,19 @@ test('ledge: three fighters contesting one ledge never enter the slab', () => {
 });
 
 test('4v4 teams + items: 30s of frames stays finite, in-bounds and unstacked', () => {
+  const realRandom = Math.random;
+  Math.random = seededRandom(3301);                 // an unseeded 4v4 flaked ~1 run in 3
+  try { teamsMatch(); } finally { Math.random = realRandom; }
+});
+
+function teamsMatch() {
   const { ctx, g } = run();
   const m = newMatch(ctx, cast(4, ['valor', 'grim', 'astra', 'vesper'], { teams: true, cpu: true }), 'foundry', {
     rules: { items: 'medium', teams: true, mode: 'teams' },
   });
   const gd = m.stage.ground;
   const keys = Object.keys(g.ITEMS);
-  let worstOverlap = 0, inSlab = 0;
+  let worstOverlap = 0, inSlab = 0, deepRun = 0, worstDeep = 0, fullRun = 0, worstFull = 0;
   for (let i = 0; i < 1800; i++) {
     if (i % 300 === 0) m.spawnItem(keys[Math.floor(i / 300) % keys.length], (i % 2 ? 140 : -140), -80);
     m.update();
@@ -305,17 +540,28 @@ test('4v4 teams + items: 30s of frames stays finite, in-bounds and unstacked', (
       assert(Math.abs(f.x) < 3000, `fighter escaped the world: ${f.key} x=${f.x}`);
       if (f.y > gd.y + 6 && f.y < gd.y + gd.h + 8 && f.x > gd.x + 6 && f.x < gd.x + gd.w - 6) inSlab++;
     }
+    // only fighters who are in the round can be "stacked"; the respawn waiting area
+    // is deliberately a pile of fighters parked at the same point above the stage
+    let deep = false, full = false;
     for (let a = 0; a < m.fighters.length; a++) {
       for (let b = a + 1; b < m.fighters.length; b++) {
         const A = m.fighters[a], B = m.fighters[b];
-        if (A.eliminated || B.eliminated || Math.abs(A.y - B.y) > 40) continue;
-        worstOverlap = Math.max(worstOverlap, 52 - Math.abs(A.x - B.x));
+        if (A.eliminated || B.eliminated || A.state === 'respawn' || B.state === 'respawn') continue;
+        if (Math.abs(A.y - B.y) > 40) continue;
+        const gap = Math.abs(A.x - B.x);
+        worstOverlap = Math.max(worstOverlap, 52 - gap);
+        if (gap < 30) deep = true;
+        if (gap < 6) full = true;
       }
     }
+    deepRun = deep ? deepRun + 1 : 0;   worstDeep = Math.max(worstDeep, deepRun);
+    fullRun = full ? fullRun + 1 : 0;   worstFull = Math.max(worstFull, fullRun);
   }
   assert(inSlab === 0, inSlab + ' frames had a fighter inside the stage slab');
-  assert(worstOverlap < 52, 'fighters were fully stacked for part of the match');
-});
+  assert(worstFull <= 2, `two fighters were fully stacked for ${worstFull} frames`);
+  assert(worstDeep < 40, `two fighters stayed >22px overlapped for ${worstDeep} frames`);
+  console.log(`        worst overlap ${(52 - worstOverlap).toFixed(0)}px gap-based, deep run ${worstDeep}f, full run ${worstFull}f`);
+}
 
 test('stress: random mashers never produce NaN or a stuck overlap', () => {
   const { ctx } = run();
@@ -343,6 +589,458 @@ test('stress: random mashers never produce NaN or a stuck overlap', () => {
     }
     stuckFrames = anyOverlap ? stuckFrames + 1 : 0;
     assert(stuckFrames < 45, `fighters pinned on top of each other for ${stuckFrames} frames`);
+  }
+});
+
+/* A 4-player CPU match is the stress case the playtesters reported as \"stuck at
+   the sides / collisions with things\": twice the bodies to separate, twice the
+   items, twice the projectiles.  Everything below is deterministic — Math.random
+   is replaced by a seeded LCG for the whole match — because a stress test that
+   only fails 1 run in 8 is a test people learn to ignore. */
+function seededRandom(seed) {
+  let s = seed >>> 0;
+  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+}
+
+const VS4_SEEDS = [['skyshrine', 4242], ['foundry', 1337], ['terminal', 555]];
+
+test('vs4: a 4-player CPU match never locks up, stalls or parks a fighter', () => {
+  const realRandom = Math.random;
+  try {
+    for (const [stage, seed] of VS4_SEEDS) {
+      Math.random = seededRandom(seed);
+      console.log(`      ${stage} / seed ${seed}`);
+      vs4Match(stage);
+    }
+  } finally { Math.random = realRandom; }
+});
+
+function vs4Match(stage) {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(4, ['valor', 'grim', 'astra', 'rook'], { cpu: true }), stage, { state: 'play' });
+  const gd = m.stage.ground;
+  const TICKS = 2400;                                     // 40 seconds of play
+  const PARKED = ['helpless', 'respawn', 'ko', 'final', 'stun'];   // long by design
+  const runs = m.fighters.map((f) => ({ key: f.key, state: null, n: 0, worst: 0, worstState: '', stale: 0, worstStale: 0, hang: 0, worstHang: 0 }));
+  const hitsAt = m.fighters.map(() => []);
+  const origHit = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { const k = m.fighters.indexOf(tgt); if (k >= 0) hitsAt[k].push(m.frame); return origHit(atk, tgt, o); };
+  let nan = 0, slab = 0, lock = 0, worstLock = 0;
+  for (let i = 0; i < TICKS; i++) {
+    m.update();
+    /* A hitlag lock is the signature of the juggle loop: both fighters are frozen
+       by hitlag, the attacker's action timer never advances past the active window,
+       and the next tick re-arms the hit.  Nothing recovers from it on its own. */
+    lock = m.fighters.some((a) => a.hitlag > 0 && !a.eliminated &&
+      m.fighters.some((b) => b !== a && !b.eliminated && Math.abs(a.x - b.x) < 90 && Math.abs(a.y - b.y) < 90)) ? lock + 1 : 0;
+    worstLock = Math.max(worstLock, lock);
+    m.fighters.forEach((f, k) => {
+      if (!Number.isFinite(f.x) || !Number.isFinite(f.y)) nan++;
+      if (f.y > gd.y + 6 && f.y < gd.y + gd.h + 8 && f.x > gd.x + 6 && f.x < gd.x + gd.w - 6) slab++;
+      const r = runs[k];
+      if (m.state !== 'play') { r.state = null; r.n = 0; r.hang = 0; return; }   // the KO pause freezes everybody
+      if (f.state === r.state) r.n++; else { r.state = f.state; r.n = 1; }
+      if (!PARKED.includes(f.state) && r.n > r.worst) { r.worst = r.n; r.worstState = f.state; r.worstAt = i; }
+      /* a fighter with no hitstun left must not stay in a hit state: that is the
+         "lying on the floor forever" report, and it also keeps the air drag on, so
+         the body slides at a third of a pixel a tick */
+      // hitlag is a designed freeze, and it holds the state still by definition
+      r.stale = ((f.state === 'hitstun' || f.state === 'launch') && f.hitstun <= 0 && f.hitlag <= 0) ? r.stale + 1 : 0;
+      r.worstStale = Math.max(r.worstStale, r.stale);
+      r.hang = f.state === 'ledge' ? r.hang + 1 : 0;
+      r.worstHang = Math.max(r.worstHang, r.hang);
+    });
+  }
+  assert(!nan, `${nan} non-finite positions`);
+  assert(!slab, `${slab} frames with a fighter inside the stage slab`);
+  assert(worstLock <= 30, `hitlag lock of ${worstLock} frames — a juggle loop`);
+  /* Every hit has to come out of an action that can end: at most a handful of hits
+     per second on one victim, however many CPUs are crowding it. */
+  let burst = 0;
+  for (const arr of hitsAt) {
+    for (let i = 0; i < arr.length; i++) { let j = i; while (j < arr.length && arr[j] - arr[i] < 60) j++; burst = Math.max(burst, j - i); }
+  }
+  assert(burst <= 10, `${burst} hits on one fighter inside 60 frames`);
+  const stale = runs.reduce((a, r) => Math.max(a, r.worstStale), 0);
+  assert(stale <= 2, `a fighter sat in a hit state with no hitstun left for ${stale} frames`);
+  const hang = runs.reduce((a, r) => Math.max(a, r.worstHang || 0), 0);
+  assert(hang < 100, `a ledge-hang lasted ${hang} frames — the auto-get-up is not firing`);
+  const worst = runs.reduce((a, r) => Math.max(a, r.worst), 0);
+  const who = runs.find((r) => r.worst === worst);
+  assert(worst < 400, `${who.key} sat in ${who.worstState} for ${worst} frames from frame ${who.worstAt}`);
+  const kos = m.fighters.reduce((a, f) => a + f.stats.kos, 0);
+  const dealt = m.fighters.reduce((a, f) => a + f.stats.dealt, 0);
+  console.log(`        worst state run ${worst}f (${who.worstState}); hits ${hitsAt.reduce((a, x) => a + x.length, 0)}, burst ${burst}/60f, ledge ${hang}f, kos ${kos}, damage dealt ${dealt.toFixed(0)}`);
+  assert(kos > 0 || dealt > 60, `40 seconds of four CPUs and nothing happened (${kos} kos, ${dealt.toFixed(0)}% dealt)`);
+}
+
+/* The three regressions that test was hunting, pinned individually. */
+test('vs4: a swing of a held item is one hit, not one hit per frame', () => {
+  const { ctx, g } = run();
+  const m = newMatch(ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  a.held = { def: g.ITEMS.beamsword, x: a.x, y: a.y, heldBy: a, ammo: 9 };
+  a.state = 'idle'; b.state = 'idle'; b.damage = 0; b.x = a.x + 30; b.vx = 0;
+  a.facing = 1;
+  let hits = 0;
+  const orig = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { hits++; return orig(atk, tgt, o); };
+  /* The CPU path calls Match.useHeld directly (ai.js useItemOrThrow); a player pays
+     24 frames of item action instead.  Before the cooldown existed, a CPU holding a
+     batter hit 60 times in 60 ticks for 660%. */
+  for (let i = 0; i < 60; i++) { m.useHeld(a); m.update(); }
+  assert(hits === 1, `${hits} hits from 60 frames of swinging — expected 1`);
+  assert(b.damage <= 12, `victim ended at ${b.damage}% from one swing`);
+});
+
+test('vs4: a multi-hit move lands its authored hits on one target, no more', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['vesper', 'grim']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  const move = a.def.moves.jab;
+  assert(1 + (move.multi || 0) === 2, 'expected Vesper\'s jab to be the two-hit test case');
+  a.state = 'idle'; b.state = 'idle';
+  b.x = a.x + 20; b.y = a.y; b.vx = b.vy = 0;
+  a.startAttack('jab', m);
+  let hits = 0;
+  const orig = m.hitFighter.bind(m);
+  m.hitFighter = (atk, tgt, o) => { if (atk === a) hits++; return orig(atk, tgt, o); };
+  for (let i = 0; i < move.frames + 12; i++) { b.x = a.x + 20; b.vx = b.vy = 0; m.update(); }
+  const authored = 1 + (move.multi || 0);
+  assert(hits === authored, `${a.key} jab hit ${hits}x, authored ${authored}x`);
+});
+test('vs4: a grab releases its victim even if the grabber never presses throw', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'vesper']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  a.state = 'idle'; b.state = 'idle'; b.grabbedBy = null; a.grabbing = null;
+  m.beginGrab(a, b);
+  assert(b.grabbedBy === a, 'beginGrab did not attach the victim');
+  let held = 0, stuck = 0;
+  for (let i = 0; i < 220; i++) {
+    a.input = { attack: true, attackP: i % 10 === 0 };      // pummel, never a throw input
+    b.input = {};
+    if (a.grabbing) held++;
+    if (b.grabbedBy) stuck++;
+    m.update();
+  }
+  /* 120 ticks is GRAB_HOLD_MAX; pummelling every 10 frames must not extend it, or
+     the victim has no way out and reads as a fighter that is stuck. */
+  assert(held > 100 && held <= 125, `the grab lasted ${held} frames, expected ~120`);
+  assert(stuck === held, `the victim stayed attached for ${stuck} of ${held} frames`);
+  assert(!a.grabbing && !b.grabbedBy, 'the pair never un-grabbed');
+  assert(b.state !== 'grabbed', `victim still in state ${b.state} after the throw`);
+});
+
+/* =================== actions keep their momentum ===================
+   A locked action owns the input, never the body.  `updateAction` used to be the
+   last thing a grounded action did in a tick, so nothing integrated the velocity it
+   wrote: the run attack's lunge, the roll, the dash specials' `dist`, the landing
+   slide — all of it was thrown away, and the fighter stood stock still while the
+   move played.  This is the family behind "the dash attack doesn't work". */
+
+function dashInto(m, g, c, key, ticks) {
+  const move = g.def.moves[key];
+  g.state = 'run'; g.facing = 1; g.vx = g.def.stats.run; g.dashT = 4; g.runArmed = true; g.onGround = true;
+  g.startAttack(key, m);
+  const x0 = g.x;
+  let travel = 0, len = 0;
+  for (let i = 0; i < ticks; i++) {
+    c.tick(1);
+    travel = Math.max(travel, Math.abs(g.x - x0));
+    if (g.action && g.action.key === key) len = Math.max(len, g.actionT);
+  }
+  return { travel, len, move };
+}
+
+test('dash: a run attack keeps its lunge instead of stopping dead', () => {
+  const { ctx } = run();
+  for (const key of ['grim', 'valor', 'vesper', 'astra', 'rook']) {
+    const m = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const g = m.fighters[0];
+    control(m).tick(24);                                   // settle on the deck
+    const c = control(m, () => ({}));
+    const r = dashInto(m, g, c, 'dashattack', g.def.moves.dashattack.frames + 6);
+    assert(r.len > 0, `${key}: the dash attack never started`);
+    // Before the fix this was 0.0px for every fighter in the roster.
+    assert(r.travel > 18, `${key} dash attack travelled only ${r.travel.toFixed(1)}px`);
+    assert(r.travel < 130, `${key} dash attack slid ${r.travel.toFixed(1)}px — a budget, not a freight train`);
+  }
+});
+
+test('dash: the lunge is what carries the run attack onto its target', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m.fighters[0], t = m.fighters[1];
+  control(m).tick(24);
+  // parked just past what the box reaches standing still, well inside lunge + box
+  const reach = Math.max(...g.def.moves.dashattack.hitboxes.map((b) => b.x + b.w)) * g.scale;
+  t.x = g.x + reach + 14; t.y = g.y; t.vx = t.vy = 0;
+  const x0 = t.x;
+  const c = control(m, () => ({}));
+  g.state = 'run'; g.facing = 1; g.vx = g.def.stats.run; g.runArmed = true;
+  g.startAttack('dashattack', m);
+  let hit = false;
+  for (let i = 0; i < g.def.moves.dashattack.frames + 8; i++) {
+    t.x = x0; t.vx = t.vy = 0; t.hitstun = 0; t.hitlag = 0;   // a dummy that never moves
+    if (g.action && g.action.key === 'dashattack' && g.activeBoxes().length) hit = true;
+    c.tick(1);
+  }
+  assert(t.damage > 0, `the dummy at +14px past the standing box took ${t.damage}% — the lunge does not close the gap`);
+});
+
+test('dash: a roll rolls, and a rush special covers the distance its data promises', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m.fighters[0];
+  control(m).tick(24);
+  const c = control(m, () => ({}));
+  g.onGround = true; g.vx = 0; g.hitstun = 0;
+  g.startRoll(1, m);
+  let roll = 0;
+  const x0 = g.x;
+  for (let i = 0; i < 32; i++) { c.tick(1); roll = Math.max(roll, Math.abs(g.x - x0)); }
+  assert(roll > 12, `a dodge-roll covered ${roll.toFixed(1)}px — a roll is a movement, not a pose`);
+
+  for (const key of ['grim', 'valor', 'astra']) {
+    const mm = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const f = mm.fighters[0];
+    control(mm).tick(24);
+    const cc = control(mm, () => ({}));
+    f.onGround = true; f.vx = 0; f.facing = 1; f.hitstun = 0;
+    f.startSpecial('s', mm);
+    assert(f.state === 'special', `${key}: no rush special fired`);
+    let best = 0;
+    const sx = f.x;
+    for (let i = 0; i < 100; i++) { cc.tick(1); best = Math.max(best, Math.abs(f.x - sx)); }
+    const want = f.def.specials.side.dist;
+    assert(best > want * 0.45, `${key}'s rush covered ${best.toFixed(0)}px of its authored ${want}px`);
+    assert(best < want * 1.9, `${key}'s rush covered ${best.toFixed(0)}px, more than its authored ${want}px`);
+  }
+
+/* The other half of a rush: it covers the distance AND it hits what is standing on
+   that distance.  A side special used to be pure theatre — the dash branch of
+   `updateSpecial` granted the speed, the travel budget and the speed lines, and the
+   `damage/bkb/kbs/angle` the move was authored with were read by nothing, because
+   `checkHit` only ran for `a.type === 'move'`.  Fixing that exposed a second bug in the
+   resolver itself: the one-hit cap was charged before the overlap was tested, so the
+   first live tick of a travelling box burned the hit two ticks early and the rush walked
+   through the target with 0% on it.  A standing jab cannot show that, which is why it
+   took a move that moves to find it. */
+test('special: a rush special lands the hit it was authored with', () => {
+  const { ctx } = run();
+  const problems = [];
+  for (const key of ['valor', 'grim', 'astra']) {
+    const m = newMatch(ctx, cast(2, [key, 'rook']), 'skyshrine', { state: 'play' });
+    const f = m.fighters[0], t = m.fighters[1];
+    control(m).tick(24);
+    const c = control(m, () => ({}));
+    f.onGround = true; f.vx = 0; f.vy = 0; f.hitstun = 0; f.facing = 1;
+    const sp = f.def.specials.side;
+    const reach = Math.max(...sp.hitboxes.map((b) => b.x + b.w)) * f.scale;
+    const dx = f.x + Math.max(reach + 40, 120);      // out of the box until the rush carries it there
+    const pin = () => { t.x = dx; t.y = m.stage.ground.y; t.vx = t.vy = 0; t.hitstun = 0; t.onGround = true; };
+    pin();
+    f.startSpecial('s', m);
+    let touched = false;
+    for (let i = 0; i < sp.frames + 12; i++) {
+      pin();
+      c.tick(1);
+      const b = f.activeBoxes()[0];
+      if (b) {
+        const t0 = t.hurtbox;
+        if (b.box.x < t0.x + t0.w && b.box.x + b.box.w > t0.x && b.box.y < t0.y + t0.h && b.box.y + b.box.h > t0.y) touched = true;
+      }
+    }
+    const spent = (f.hitCount && f.hitCount.get(t.id)) || 0;
+    if (Math.round(t.damage) !== sp.damage) problems.push(`${key}: rush landed ${t.damage}% instead of its authored ${sp.damage}%`);
+    if (spent !== 1) problems.push(`${key}: rush spent ${spent} hits on one target (the cap is 1)`);
+    if (!touched) problems.push(`${key}: the box never overlapped the target, so the hit was not the rush's doing`);
+  }
+  assert(!problems.length, problems.join('\n        '));
+
+  // and it still only hits what the body actually passes through
+  const m2 = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const g = m2.fighters[0], r = m2.fighters[1];
+  control(m2).tick(24);
+  const c2 = control(m2, () => ({}));
+  g.onGround = true; g.vx = 0; g.hitstun = 0; g.facing = 1;
+  r.x = g.x - 140; r.y = g.y; r.vx = r.vy = 0; r.onGround = true;   // behind him, away from the lunge
+  g.startSpecial('s', m2);
+  for (let i = 0; i < 70; i++) { r.x = g.x - 140; c2.tick(1); }
+  assert(r.damage === 0, `a rush hit a fighter standing behind it for ${r.damage}%`);
+
+  // a shield eats it the way every other melee move does: no damage, shield gone
+  const m3 = newMatch(ctx, cast(2, ['valor', 'rook']), 'skyshrine', { state: 'play' });
+  const v = m3.fighters[0], d = m3.fighters[1];
+  control(m3).tick(24);
+  const c3 = control(m3, () => ({}));
+  v.onGround = true; v.vx = 0; v.hitstun = 0; v.facing = 1;
+  const dreach = Math.max(...v.def.specials.side.hitboxes.map((b) => b.x + b.w)) * v.scale;
+  const shield0 = 60;
+  const pin3 = () => {
+    d.x = v.x + Math.max(dreach + 30, 100); d.y = m3.stage.ground.y; d.vx = d.vy = 0; d.hitstun = 0;
+    d.onGround = true; d.shieldHP = shield0; d.shielding = true;
+  };
+  pin3();
+  v.startSpecial('s', m3);
+  for (let i = 0; i < v.def.specials.side.frames + 12; i++) { pin3(); c3.tick(1); }
+  assert(d.damage === 0, `a rushed shield took ${d.damage}% — the box should be eaten by the bubble`);
+  assert(d.shieldHP < shield0, 'the rush passed through a shield without touching it');
+});
+
+  // …and a plain grounded move still stays where it was put
+  const m3 = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
+  const j = m3.fighters[0];
+  control(m3).tick(24);
+  const c3 = control(m3, () => ({}));
+  j.onGround = true; j.vx = 0; j.state = 'idle';
+  j.startAttack('jab', m3);
+  let drift = 0;
+  const jx = j.x;
+  for (let i = 0; i < 24; i++) { c3.tick(1); drift = Math.max(drift, Math.abs(j.x - jx)); }
+  assert(drift < 6, `a standing jab slid ${drift.toFixed(1)}px — a tilt should stay planted`);
+});
+
+test('grab: a pummel damages its victim inside the grab instead of launching them', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(2, ['grim', 'vesper']), 'skyshrine', { state: 'play' });
+  const a = m.fighters[0], b = m.fighters[1];
+  control(m).tick(24);
+  const c = control(m, () => ({}));
+  m.beginGrab(a, b);
+  const d0 = b.damage, x0 = b.x, y0 = b.y;
+  let held = 0;
+  for (let i = 0; i < 40; i++) {
+    if (i % 8 === 0) m.pummel(a);
+    if (a.grabbing && b.grabbedBy) held++;
+    c.tick(1);
+  }
+  assert(b.damage > d0, `three pummels dealt ${b.damage - d0}% — the pummel did nothing`);
+  assert(held > 30, `the pair stayed attached for only ${held}/40 frames — a pummel must not break the hold`);
+  assert(b.state === 'grabbed', `victim is in state ${b.state}, expected to still be grabbed`);
+  assert(Math.abs(b.y - y0) < 40 && Math.abs(b.x - (a.x + a.facing * 30 * a.scale)) < 8,
+    `victim drifted to (${b.x.toFixed(0)},${b.y.toFixed(0)}) — a pummel is not a throw`);
+  void x0;
+});
+
+/* =================== blocked hits, lunge windows, and the copied decks ===================
+   Playtest report: "dash attack still doesn't inflict damage — look at damage logic and
+   hitboxes".  The hitboxes were already fine (see the reach tests above); what was not:
+   a held shield absorbed a hit *entirely* — shield HP fell, hitlag fired, and the damage
+   meter did not move a point, so every attack into a blocking CPU read as a dud — and a
+   run attack's box died before its lunge stopped travelling, so a foe reached late was
+   walked through with 0% on them.  Both are pinned below, and the decks the AI hides
+   behind are now the templates they came from. */
+
+/* `run` frames of held direction, then the attack button, then let it play out. */
+function attackInto(h, key, foeKey, gap, foeShield, stage) {
+  const m = newMatch(h.ctx, cast(2, [key, foeKey || 'rook']), stage || 'skyshrine', { state: 'play' });
+  m.rules.items = 'off';
+  m.rules.hazards = false;
+  const a = m.fighters[0], b = m.fighters[1];
+  control(m).tick(30);
+  const gr = m.stage.ground, px = gr.x + 160;
+  a.x = px; a.y = gr.y; a.vx = 0; a.vy = 0; a.state = 'idle'; a.onGround = true; a.facing = 1;
+  b.x = px + gap; b.y = gr.y; b.vx = 0; b.vy = 0; b.state = 'idle'; b.onGround = true;
+  b.spawnProtect = 0; b.invincT = 0;
+  // 30 ticks of running first: that is what a player does — hold the direction, let the
+  // dash come, then press.  Attacking off a standstill is a different move (a tilt).
+  let n = 0;
+  const ctl = control(m, (f) => {
+    if (f === a) return { right: n < 30, attack: n >= 30 };
+    return foeShield ? { shield: true } : {};
+  });
+  let move = null, live = 0, dealt = 0;
+  for (let i = 0; i < 150; i++, n++) {
+    m.items.length = 0;                       // rules.items='off' only stops the *next* spawn
+    if (foeShield) { b.shieldHP = Math.max(b.shieldHP, 45); b.shielding = true; }
+    const before = b.damage;
+    ctl.tick(1);
+    dealt += b.damage - before;
+    if (a.action && !move) move = a.action.key || a.action.type;
+    if (a.activeBoxes && a.activeBoxes().length) live++;
+  }
+  return { a, b, move, live, dealt, shieldHP: b.shieldHP };
+}
+
+test('shield: a blocked hit is damage with a discount, not nothing', () => {
+  const h = boot();
+  for (const key of ['grim', 'valor']) {
+    const open = attackInto(h, key, 'rook', 110, false);
+    const blocked = attackInto(h, key, 'rook', 110, true);
+    assert(open.move === 'dashattack', `${key}: the run attack produced ${open.move}`);
+    assert(open.dealt > 0, `${key}: a dash attack into an open foe dealt 0% — the move cannot hit`);
+    assert(blocked.dealt > 0, `${key}: into a held shield the same attack dealt 0% of ${open.dealt}`);
+    assert(blocked.dealt < open.dealt, `${key}: blocking is worth nothing (${blocked.dealt} vs ${open.dealt})`);
+    assert(blocked.shieldHP < 60, `${key}: the shield did not even take the hit`);
+  }
+});
+
+test('dash: the lunge keeps its hitbox for as long as it is still travelling', () => {
+  const h = boot();
+  for (const key of ['grim', 'valor', 'astra', 'vesper', 'rook']) {
+    const r = attackInto(h, key, 'rook', 240, false);
+    assert(r.move === 'dashattack', `${key}: expected a dash attack, got ${r.move}`);
+    assert(r.live >= 8, `${key}: the box was live for ${r.live} ticks — shorter than the charge that carries it`);
+    assert(r.dealt > 0, `${key}: a foe 240px away was walked through with 0% on them`);
+  }
+});
+
+/* The Ultimate templates the decks below are copied from: Battlefield is a flat deck,
+   three soft platforms above it and one low one over the middle; Final Destination is
+   that deck with the soft platforms removed.  A deck that claims a form and does not
+   have its shape is the bug worth catching, because the shape is the whole idea. */
+const FORMS = {
+  field: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  bigfield: { platforms: 5, minAbove: 4, low: true, hazard: null },
+  smallfield: { platforms: 3, minAbove: 2, low: true, hazard: null },
+  nullshore: { platforms: 0, minAbove: 0, low: false, hazard: null },
+  terminal: { platforms: 0, minAbove: 0, low: false, hazard: null },
+  stadium: { platforms: 2, minAbove: 2, low: false, hazard: null },
+  village: { platforms: 3, minAbove: 3, low: false, hazard: null },
+  towncity: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  cartoon: { platforms: 3, minAbove: 3, low: false, hazard: null },
+  league: { platforms: 4, minAbove: 3, low: true, hazard: null },
+  cruise: { platforms: 3, minAbove: 3, low: false, hazard: 'pillar' },
+};
+
+test('decks: every stage is playable, and the copied ones keep the template they name', () => {
+  const h = boot();
+  const { STAGES, WORLD } = h.g;
+  const keys = Object.keys(STAGES);
+  assert(keys.length >= 16, `only ${keys.length} decks in the roster`);
+  for (const k of keys) {
+    const s = STAGES[k], g = s.ground;
+    assert(s.name && s.sub && s.theme && s.accent && s.bg.length === 3, `${k}: a deck needs name, sub, theme, accent and a 3-stop sky`);
+    assert(g.w >= 800 && g.w <= 1400, `${k}: deck is ${g.w}px wide — off the thumb scale, out of the camera's range`);
+    assert(g.x >= WORLD.blast.left && g.x + g.w <= WORLD.blast.right, `${k}: the deck reaches past the blast lines`);
+    for (const p of s.platforms) {
+      assert(p.x >= g.x - 40 && p.x + p.w <= g.x + g.w + 40, `${k}: a platform hangs off the deck it sits over`);
+      assert(p.y < -60, `${k}: a platform at y=${p.y} is inside the deck, not above it`);
+      assert(p.w >= 100 && p.h >= 12, `${k}: a ${p.w}x${p.h} platform is a lip, not a ledge`);
+    }
+    const form = FORMS[k];
+    if (form) {
+      assert(s.platforms.length === form.platforms,
+        `${k}: ${s.platforms.length} platforms, but it is sold as the form with ${form.platforms}`);
+      const above = s.platforms.filter((p) => p.y < -140).length;
+      assert(above >= form.minAbove, `${k}: ${above} high platforms, expected at least ${form.minAbove}`);
+      assert(!!s.platforms.find((p) => p.y >= -140) === form.low, `${k}: the low centre platform this form is defined by is missing`);
+      assert((s.hazard && s.hazard.type) === form.hazard, `${k}: hazard is ${s.hazard && s.hazard.type}, expected ${form.hazard}`);
+    }
+    // and it plays: four seconds of holding left must reach the far edge of the deck —
+    // a wall, a platform in the way or a fighter that cannot turn is the usual way a
+    // hand-tuned layout quietly stops being playable.  Ledges are allowed to catch them.
+    const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), k, { state: 'play' });
+    m.rules.items = 'off';
+    const f = m.fighters[0];
+    let edge = 1e9;
+    const ctl = control(m, (ff) => (ff === f ? { left: true } : {}));
+    for (let i = 0; i < 240; i++) { ctl.tick(1); edge = Math.min(edge, f.x); }
+    assert(m.frame > 200, `${k}: the match stopped ticking`);
+    assert(edge <= m.stage.ground.x + 40 || f.eliminated,
+      `${k}: a fighter held at the left edge for 4s got only to x=${edge.toFixed(0)} of deck edge ${m.stage.ground.x}`);
   }
 });
 

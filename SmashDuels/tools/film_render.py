@@ -74,7 +74,16 @@ def blit(dst, atlas, op, ox, oy):
     ac = kx * (-(d * ex - c * ey) / det - op['dx']) + op['sx']
     dd, de = -ky * b / det, ky * a / det
     df = ky * ((b * ex - a * ey) / det - op['dy']) + op['sy']
-    layer = atlas.transform(dst.size, Image.AFFINE, (aa, ab, ac, dd, de, df), resample=NEAREST)
+    # Source rect, clipped.  PIL's AFFINE transform samples the whole image it is given,
+    # and an atlas is a jigsaw of *adjacent opaque art*: without this, a 4x4 dust speck
+    # blown up 3x smears the flame row packed next to it across the cell, and the contact
+    # sheet shows an inferno where the game draws one pixel.  A real canvas clips to
+    # (sx, sy, sw, sh) inside drawImage; so must this.
+    sx, sy = op['sx'], op['sy']
+    win = Image.new('RGBA', atlas.size, (0, 0, 0, 0))
+    crop = atlas.crop((sx, sy, sx + sw, sy + sh))
+    win.paste(crop if crop.mode == 'RGBA' else crop.convert('RGBA'), (sx, sy))
+    layer = win.transform(dst.size, Image.AFFINE, (aa, ab, ac, dd, de, df), resample=NEAREST)
     al = max(0.0, min(1.0, op.get('a', 1)))
     if al < 1.0:
         r, g, bch, a2 = layer.split()
@@ -113,6 +122,22 @@ def render_cell(atlas, fr, cell, ground_pad):
     return img
 
 
+def blit_pos(fr):
+    """Where the sprite was actually pasted — x and y, in world units.  A frame whose
+    position *and* tile match the one before it drew nothing new."""
+    ops = fr.get('ops') or []
+    if not ops or not ops[0].get('m'):
+        return None
+    m = ops[0]['m']
+    return (round(m[4], 3), round(m[5], 3), fr.get('anim'))
+
+
+def dups(fr):
+    """How many frames drew the sprite exactly where the frame before it did."""
+    xs = [blit_pos(f) for f in fr]
+    return sum(1 for i in range(1, len(xs)) if xs[i] is not None and xs[i] == xs[i - 1])
+
+
 def summarise(sc):
     fr = sc['frames']
     anims = [f['anim'] for f in fr if f['anim']]
@@ -124,6 +149,8 @@ def summarise(sc):
     if b:
         parts.append('box %dx%d' % (round(b['w']), round(b['h'])))
     parts.append('%.0fpx travelled' % (abs(fr[-1]['x'] - fr[0]['x']) if len(fr) > 1 else 0))
+    if len(fr) > 1:
+        parts.append('%d stuck frames' % dups(fr))
     if blank:
         parts.append('%d BLANK' % blank)
     return ', '.join(parts)
@@ -144,8 +171,11 @@ def sheet(atlas, sc, cell, cols, gp):
         x, y = GUTTER + c * (cw + 4), r * (ch + 17)
         out.paste(render_cell(atlas, fr, cell, gp), (x, y))
         d = ImageDraw.Draw(out)
-        d.rectangle([x, y, x + cw - 1, y + ch - 1], outline=FRAME_LINE)
+        d.rectangle([x, y, x + cw - 1, y + ch - 1],
+                    outline=(190, 90, 90) if i and blit_pos(fr) == blit_pos(frames[i - 1]) else FRAME_LINE)
         tag = '%d %s' % (i, fr['anim'] or '-')
+        if fr.get('sub'):
+            tag += ' \u03b1%s' % fr['sub']            # which slice of the next tick this frame is
         if fr['hit']:
             tag += ' HIT'
         if fr['state'] not in ('idle', 'run', 'walk'):

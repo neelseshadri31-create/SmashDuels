@@ -394,6 +394,8 @@ const UI = (() => {
   function boot() {
     SAVE.load();
     INPUT.init();
+    /* Printed on boot so "is my tab running the new code?" is a one-glance answer. */
+    console.info('[rift] build ' + (typeof BUILD !== 'undefined' ? BUILD : '?'));
     buildTitle();
     buildSelect();
     setupMatchScreen();
@@ -451,6 +453,7 @@ const UI = (() => {
 const Game = (() => {
   let canvas, ctx, match = null, raf = null, last = 0, acc = 0;
   const STEP = 1000 / 60;
+  let frameDt = STEP;                 // smoothed rAF period: the panel-rate estimate
   let cameraIntro = 0;
 
   function init(cv) {
@@ -477,7 +480,7 @@ const Game = (() => {
     AUDIO.init(); AUDIO.resume();
     if (SAVE.data.settings.music) AUDIO.startMusic();
     if (raf) cancelAnimationFrame(raf);
-    last = performance.now(); acc = 0;
+    last = performance.now(); acc = 0; frameDt = STEP;
     raf = requestAnimationFrame(loop);
   }
   function restart() {
@@ -548,6 +551,7 @@ const Game = (() => {
   function loop(now) {
     raf = requestAnimationFrame(loop);
     const dt = Math.min(now - last, 100); last = now;
+    if (dt > 0 && dt < 40) frameDt += (dt - frameDt) * 0.1;
     // fixed timestep 60fps
     acc += dt;
     let steps = 0;
@@ -559,17 +563,27 @@ const Game = (() => {
       }
       acc -= STEP; steps++;
     }
-    if (match) render();
+    /* What fraction of a tick is still outstanding, handed to the draw pass so it
+       can land between two physics frames (see Sprites.beginFrame).  Only asked for when the
+       panel is outpacing the simulation: at 60 Hz the leftover is what a step was
+       going to do anyway, and holding the blend off there keeps the drawn frame
+       exactly the tick the engine produced — no added input latency on a normal
+       monitor. */
+    const alpha = frameDt < STEP * 1.3 ? Math.min(1, acc / STEP) : 0;
+    if (match) render(alpha);
     updateHUD();
   }
 
-  function render() {
+  function render(alpha) {
     const W = match.W, H = match.H;
     const dpr = canvas.width / W;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const cam = match.cam;
     cam.W = W; cam.H = H;
+    // render-rate smoothing; see Sprites.beginFrame (skipped while paused, where
+    // a frozen fighter has velocity but no motion to interpolate)
+    const unblend = Sprites.beginFrame ? Sprites.beginFrame(match, match.paused ? 0 : (alpha || 0)) : null;
 
     // background (screen space parallax)
     ctx.save();
@@ -609,9 +623,6 @@ const Game = (() => {
         ctx.restore();
       }
     }
-
-    // items behind fighters
-    for (const it of match.items) if (it.heldBy) it.draw(ctx, match.time);
 
     // summons
     for (const s of match.summons) s.draw(ctx, match.time);
@@ -655,6 +666,10 @@ const Game = (() => {
       // cpu tag above head (GDD §13.1 player indicator)
       if (!f.eliminated) drawNameTag(ctx, f, match);
     }
+
+    // Items in hand, after the bodies: a held sprite anchored to the knuckle line has
+    // to draw over the fighter holding it, or the sword disappears into their back.
+    for (const it of match.items) if (it.heldBy) it.draw(ctx, match.time);
 
     // projectiles & fx
     // ---- Break the Targets
@@ -713,6 +728,7 @@ const Game = (() => {
     match.fx.draw(ctx, cam);
 
     ctx.restore();
+    if (unblend) unblend();          // sim state is exactly what the last tick left it
 
     // screen-space overlays
     ctx.save();
@@ -855,6 +871,7 @@ window.RR = {
     const m = window.__match; if (!m) return null;
     const f = m.fighters[0];
     return {
+      build: typeof BUILD !== 'undefined' ? BUILD : '?',
       st: f.state, keys: Object.keys(INPUT.keys).filter(k => INPUT.keys[k]),
       hit: Object.keys(INPUT.pressed).filter(k => INPUT.pressed[k]),
       buf: JSON.parse(JSON.stringify(f.inputBuffer)),
@@ -886,6 +903,7 @@ window.RR = {
 
 addEventListener('DOMContentLoaded', () => {
   Sprites.load();
+  if (Sprites.loadItems) Sprites.loadItems();
   UI.boot();
   if (typeof CloudSave !== 'undefined' && CloudSave) CloudSave.boot();
   Game.init(document.getElementById('game-canvas'));

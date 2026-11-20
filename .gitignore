@@ -5,3 +5,6 @@ node_modules/
 .imgenv/
 anim-films/
 SmashDuels/game/assets/atlas/*.orig.json
+
+# re-flowed sprite sheets are derived from the generated ones (tools/sheet_grid.py)
+SmashDuels/assets-src/rows/*-grid*.png

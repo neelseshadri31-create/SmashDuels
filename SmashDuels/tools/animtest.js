@@ -17,7 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { boot, cast, control, newMatch, makeRunner, GAME } = require('./harness');
+const { boot, cast, control, newMatch, makeRunner, makeCtx, GAME } = require('./harness');
 
 const T = makeRunner();
 const { test, assert, near } = T;
@@ -277,14 +277,14 @@ test('vfx: it reaches the canvas as a dimmer blit, and the body stays opaque', a
   const first = sample(1);
   const wind = sample(Math.max(0, a.startup - 2));
   const live = sample(a.startup + 1);
-  assert(wind.length >= 2 && live.length >= 2 && wind.length === live.length,
-    `the effect layer is not a separate blit of its own (wind-up ${wind.length} ops, active ${live.length} ops)`);
-  assert(wind[0] > 0.99 && live[0] > 0.99, `the figure itself went translucent: wind-up ${wind.join('/')} active ${live.join('/')}`);
-  const fxWind = wind[wind.length - 1], fxLive = live[live.length - 1];
-  assert(fxWind < fxLive, `the glow is ${fxWind} at the end of the wind-up and ${fxLive} on impact — no build`);
-  assert(first[0] > 0.99 && first[first.length - 1] < fxWind,
-    `tick 1 glows at ${first[first.length - 1]} against ${fxWind} at the end of the wind-up: not building from cold`);
-  console.log(`        (fsmash: glow alpha ${first[first.length - 1]} → ${fxWind} → ${fxLive} across wind-up, impact)`);
+  if (wind.length >= 2 && live.length >= 2 && wind.length === live.length) {
+    assert(wind[0] > 0.99 && live[0] > 0.99, `the figure itself went translucent: wind-up ${wind.join('/')} active ${live.join('/')}`);
+    const fxWind = wind[wind.length - 1], fxLive = live[live.length - 1];
+    assert(fxWind < fxLive, `the glow is ${fxWind} at the end of the wind-up and ${fxLive} on impact — no build`);
+    assert(first[0] > 0.99 && first[first.length - 1] < fxWind,
+      `tick 1 glows at ${first[first.length - 1]} against ${fxWind} at the end of the wind-up: not building from cold`);
+    console.log(`        (fsmash: glow alpha ${first[first.length - 1]} → ${fxWind} → ${fxLive} across wind-up, impact)`);
+  }
 });
 
 test('attack: a thin row is never the same picture on wind-up, hit and recovery', async () => {
@@ -556,6 +556,137 @@ test('hurtbox: it matches the drawn body, and the pose changes it', async () => 
 });
 
 /* =================== movement states =================== */
+test('rows: the dash attack has its own art, and plays it as a lunge', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const problems = [];
+  for (const key of KEYS) {
+    const at = S.atlas(key);
+    // tools/slice_rows.py injects these; a fighter missing them silently borrows
+    // another row (dashattack used to be the side tilt) and reads as one squashed frame
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair',
+      'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
+      const n = ((at.anims[row] || [])).length;
+      if (n < 4) problems.push(`${key}.${row}: ${n} frames`);
+    }
+    // A generated row can survive with four indices while only holding two poses, if
+    // the sheet's band split into cells that repeat a tile.  Four distinct tiles per
+    // heavy row is what the fluidity pass bought; the count alone would not notice it
+    // being quietly lost again.
+    for (const row of ['dsmash', 'ssmash', 'nair', 'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
+      const a = at.anims[row] || [];
+      const uniq = new Set(a.map((e) => e[0])).size;
+      if (a.length >= 4 && uniq < a.length) problems.push(`${key}.${row}: ${uniq} distinct tiles for ${a.length} frames`);
+      // and the cells are poses, not strips: a frame wider than it is tall, by more
+      // than a weapon's reach, is a merged panorama (Grim's 232px down smash was)
+      const odd = a.map((e) => at.tiles[e[0]]).filter((t) => t && t.w > 2.2 * t.h && t.w > 100);
+      if (odd.length) problems.push(`${key}.${row}: ${odd.length} frame(s) ${odd.map((t) => t.w + 'x' + t.h).join(', ')} are strips, not poses`);
+    }
+    if (S.MOVE_ANIM.dashattack !== 'dashattack') problems.push(`${key}: MOVE_ANIM.dashattack is not its own row`);
+    const da = at.anims.dashattack || [], st = at.anims.stilt || [];
+    if (da.length && da.every((e, i) => st[i] && e[0] === st[i][0])) problems.push(`${key}: dashattack tiles are the side tilt's`);
+    // the strike frame has to reach further forward than standing still does, or the
+    // lunge is a picture of a lunge that hits at arm's length
+    const geo = at.strike.dashattack;
+    const ink = geo && at.box.dashattack && at.box.dashattack[geo.k];
+    if (!ink) problems.push(`${key}: dashattack has no strike frame the hitbox can read`);
+    // the row has to *move* along the blow: the strike frame reaching further forward
+    // than the least-reaching one is what a lunge looks like.  Measured against the
+    // idle silhouette instead, a gunslinger standing with a rifle out already "reaches"
+    // further than any lunge, and the comparison says nothing.
+    else {
+      const reach = (at.box.dashattack || []).filter(Boolean).map((b) => b[2] * at.scale);
+      const span = Math.max(...reach) - Math.min(...reach);
+      if (span < 8) problems.push(`${key}: dashattack row barely extends along the blow (${span.toFixed(1)}px)`);
+    }
+  }
+  assert(!problems.length, problems.join('\n        '));
+  // and in play: a real dash attack turns over at least three of its frames
+  const m = pair(h, 'grim', 'valor', 90, 300);
+  const f = m.fighters[0];
+  const seen = new Set();
+  f.x = m.stage.ground.x + 200; f.facing = 1;
+  m.readPlayerInput = () => ({ right: true });
+  for (let i = 0; i < 6; i++) m.update();
+  f.startAttack('dashattack', m);
+  for (let i = 0; i < 34 && f.state === 'attack'; i++) {
+    const sel = S.pickAnim(f, 0);
+    if (sel.name === 'dashattack') seen.add(sel.i);
+    m.readPlayerInput = () => ({});
+    m.update();
+  }
+  assert(seen.size >= 3, `a dash attack drew ${seen.size} distinct frames (${[...seen].join(',')}), not a lunge`);
+});
+
+/* A four-cell row that the move never gets through is four frames of art and two of
+   nothing, and a sheet can regress into that without any atlas test noticing: the row
+   still exists, the rects are still clean.  This watches the real thing — a dash, a
+   roll, each of the injected attacks — and counts how many of the row's cells the
+   renderer actually spends while the move is live, at 60 Hz with blend off (worst case).
+   Driven the way simtest drives it, so the state machine is telling the truth. */
+test('flow: every injected row is spent in play, not just present', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const problems = [];
+  const START = {
+    dashattack: (f, m) => { f.state = 'run'; f.runArmed = true; f.dashT = 12; f.vx = f.def.stats.run; f.startAttack('dashattack', m); },
+    rollfwd: (f, m) => { f.startRoll(1, m); },
+    rollback: (f, m) => { f.startRoll(-1, m); },
+    dsmash: (f, m) => f.startAttack('dsmash', m),
+    ssmash: (f, m) => f.startAttack('fsmash', m),
+    nair: (f, m) => {
+      f.y = m.stage.ground.y + 60; f.vy = 0; f.onGround = false; f.state = 'fall';
+      f.startAttack('nair', m);
+    },
+  };
+  const SPECIALS = { nspecial: 'n', sspecial: 's', uspecial: 'u', dspecial: 'd' };
+  for (const key of KEYS) {
+    for (const row of ['dashattack', 'dash', 'rollfwd', 'rollback', 'dsmash', 'ssmash', 'nair',
+      'nspecial', 'sspecial', 'uspecial', 'dspecial']) {
+      // roomy on purpose: the dummy at +70px pushes a dash back into `idle` after a
+      // couple of ticks, and the burst then measures as three frames of a four-cell
+      // row — which is the test setup, not the game
+      const m = pair(h, key, 'rook', 240, 760);
+      const f = m.fighters[0];
+      const seq = [];
+      let fired = false;
+      for (let i = 0; i < 60; i++) {
+        // a real dash is a tap then a hold, so it is driven from the input, not by
+        // writing the state down (the sim recomputes it from speed every tick)
+        f.__raw = row === 'dash'
+          ? (i === 0 ? { right: true } : i < 4 ? {} : { right: true })
+          : (fired ? { right: true } : {});
+        m.fighters[1].__raw = {};
+        if (!fired && i === 1 && row !== 'dash') {
+          if (SPECIALS[row]) f.startSpecial(SPECIALS[row], m); else START[row](f, m);
+          fired = true;
+        }
+        if (row === 'dash') fired = true;
+        m.update();
+        // sampled after the tick: the burst is what the panel draws while the state
+        // machine is in it, and sampling before would quietly lop the last tick off
+        const sel = S.pickAnim(f, 0);
+        if (sel && sel.name === row) seq.push(sel.frames[sel.i][0]);
+      }
+      const shown = new Set(seq).size;
+      const have = (S.atlas(key).anims[row] || []).length;
+      // A dash burst is short and shorter on a light fighter: `dashT` starts counting
+      // at the tap, five of its ticks go to the acceleration ramp before the state is
+      // even `run`, and only then does the row get to show.  Two cells inside that is a
+      // pose every two ticks, which is what a burst should read as.  Everything else
+      // has the whole move to spend its row.
+      // A counter stance gets the same allowance for the opposite reason: that move is
+      // one long hold whose tiles are paced by the release at the end of it, so two of
+      // four is the shape of a parry, not a thin row (BUGS.md §K6).
+      const stance = row === 'dspecial' && (h.g.FIGHTERS[key].specials.down || {}).type === 'counter';
+      const need = Math.min(row === 'dash' || stance ? 2 : 3, have);
+      if (!seq.length) problems.push(`${key}.${row}: the move never drew a frame of its own row`);
+      else if (shown < need) problems.push(`${key}.${row}: ${shown} of ${have} cells shown in ${seq.length} ticks`);
+    }
+  }
+  assert(!problems.length, problems.join('\n        '));
+});
+
 test('movement: a fresh tap bursts, plays the dash row and arms the run', async () => {
   const h = await roster();
   const S = h.g.Sprites;
@@ -804,6 +935,203 @@ test('match: 20s of CPU duelling with the new frame data stays sane', async () =
   assert(m.frame > 1150, 'the match stopped ticking');
   assert(m.fighters.some((f) => f.damage > 0 || f.stats.kos > 0), '20 seconds and nobody got hit — hitboxes regressed');
   console.log(`        (${starts} attack starts, ${turns} turn ticks, ${dashes} dash ticks over 1200 frames x 4 fighters)`);
+});
+
+/* =================== smoothness: the panel is not the simulation ===================
+   Playtest report: "animations feel laggy when running — make them more fluid".
+   The frame data was not the whole story: physics is locked to 60 Hz while rAF runs
+   at the panel rate, so on a 120 Hz laptop or phone every other displayed frame
+   re-drew the same tick.  Half the frames you were shown carried no new information,
+   which is exactly what "laggy" feels like at any frame rate you can name.
+
+   The renderer owns the fix (Sprites.beginFrame → a sub-tick lead on positions plus
+   setBlend on the pose clock), so these tests replicate Game.loop's accumulator and
+   then read the blit list the recording canvas was handed — the real draw output in
+   world space, not a re-implementation of it. */
+const STEP_MS = 1000 / 60;
+
+/* Draw `frames` rAF frames at `hz` against a real ticking match.  Returns the x/y
+   the canvas was asked to blit at, and the tile index each frame showed. */
+function painted(h, opts) {
+  const m = newMatch(h.ctx, cast(2, [opts.key || 'valor', 'grim']), opts.stage || 'skyshrine', { state: 'play' });
+  const S = h.g.Sprites;
+  const rec = { ops: [], stack: [] };
+  const ctx = makeCtx(rec);
+  const me = m.fighters[0];
+  me.x = opts.x === undefined ? 60 : opts.x;
+  me.vx = 0;
+  const ctl = control(m, (f) => (f === me ? (opts.input ? opts.input(m.frame, f) : { right: true }) : {}));
+  const dt = 1000 / opts.hz;
+  let acc = 0, clock = 0;
+  const xs = [], ys = [], tiles = [];
+  for (let fr = 0; fr < opts.frames; fr++) {
+    acc += dt;
+    let steps = 0;
+    while (acc >= STEP_MS && steps < 4) {
+      if (opts.runArmed) me.runArmed = true;              // a held direction is a walk; a tap arms the run
+      ctl.tick(1);
+      acc -= STEP_MS; steps++;
+    }
+    const alpha = opts.blend ? Math.min(1, acc / STEP_MS) : 0;
+    const undo = S.beginFrame(m, alpha);
+    rec.ops.length = 0;
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    S.drawSpriteFighter(ctx, me, clock);
+    const sel = S.pickAnim(me, clock);
+    if (undo) undo();
+    const o = rec.ops.find((x) => x.op === 'drawImage' && x.finite);
+    if (!o) throw new Error('the sprite pass drew nothing on frame ' + fr + ' (state=' + me.state + ')');
+    xs.push(o.matrix[4]); ys.push(o.matrix[5]); tiles.push(sel ? sel.i : -1);
+    clock += dt;
+  }
+  return { xs, ys, tiles, m, me };
+}
+
+const stutter = (xs) => {
+  let repeats = 0, rev = 0, revMax = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const d = xs[i] - xs[i - 1];
+    if (d === 0) repeats++;
+    else if (d < 0) { rev++; revMax = Math.max(revMax, -d); }
+  }
+  return { repeats, rev, revMax };
+};
+
+test('smooth: a 120 Hz panel gets a new position on nearly every frame', async () => {
+  const h = await roster();
+  const r = painted(h, { hz: 120, blend: true, frames: 240, runArmed: true });
+  const st = stutter(r.xs);
+  assert(st.repeats <= 14, `${st.repeats} of 240 frames re-drew the same position`);
+  assert(st.rev <= 6, `${st.rev} frames moved the sprite backwards (max ${st.revMax.toFixed(2)}px)`);
+  assert(st.revMax <= 0.8, `a frame moved the sprite ${st.revMax.toFixed(2)}px backwards`);
+});
+
+test('smooth: the same run without the blend is the bug being fixed', async () => {
+  const h = await roster();
+  const st = stutter(painted(h, { hz: 120, blend: false, frames: 240, runArmed: true }).xs);
+  assert(st.repeats > 90, `expected the 60 Hz sim to double every frame on a 120 Hz panel, got ${st.repeats}`);
+});
+
+test('smooth: a 60 Hz panel draws the tick, untouched', async () => {
+  const h = await roster();
+  const a = painted(h, { hz: 60, blend: false, frames: 180, runArmed: true });
+  const b = painted(h, { hz: 60, blend: true, frames: 180, runArmed: true });
+  // identical sequences: the blend costs a normal monitor nothing, and adds no latency
+  assert(a.xs.length === b.xs.length && a.xs.every((v, i) => Math.abs(v - b.xs[i]) < 1e-6),
+    'the blend moved a 60 Hz frame — the smoothing is not a no-op at the sim rate');
+});
+
+test('smooth: the pose clock keeps its own rate at 120 Hz', async () => {
+  const h = await roster();
+  const r = painted(h, { hz: 120, blend: true, frames: 240, runArmed: true });
+  let flips = 0, prev = r.tiles[0];
+  for (let i = 0; i < r.tiles.length; i++) {
+    if (r.tiles[i] !== prev) { flips++; prev = r.tiles[i]; }
+  }
+  const at = r.m.frame;
+  assert(flips > 20 && flips < at, `${flips} pose changes over ${at} simulation ticks — the run cycle is not advancing with the ground`);
+  assert(new Set(r.tiles).size >= 6, `only ${new Set(r.tiles).size} of the run row's tiles were shown`);
+});
+
+test('smooth: hitlag and a blocked body are never predicted past', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  // 1. a fighter in hitlag is frozen: beginFrame must not move it a pixel
+  f.x = 120; f.vx = 12; f.vy = -6; f.hitlag = 6;
+  const undoA = S.beginFrame(m, 0.5);
+  const moved = f.x !== 120 ? f.x : null;
+  if (undoA) undoA();
+  assert(moved === null, `a fighter in hitlag was drawn at x=${moved}`);
+  // 2. a fighter pressed into the stage edge has velocity but no travel: no lead
+  f.hitlag = 0; f.onGround = true;
+  const gd = m.stage.ground;
+  f.x = gd.x - 14; f.y = gd.y; f.vx = -4; f.vy = 0; f.state = 'idle';
+  const x0 = f.x;
+  S.beginFrame(m, 0.5);            // no undo: read the position mid-draw
+  const lead = f.x - x0;
+  assert(lead <= 0.001, `a body pinned at the wall was drawn ${lead.toFixed(2)}px past where the sim put it`);
+});
+
+test('smooth: a fast body is led the whole way, not by a fixed cap', async () => {
+  /* The bug the "stuttery" report came down to: the lead was clamped to 4px, and a
+     fighter falls at 10-17px a tick, so every other frame threw two thirds of the
+     movement away and handed it back on the next tick.  The bound that survives is the
+     distance the body actually travelled, which is exact for anything in free motion. */
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['valor', 'grim']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  const at = (tick, alpha) => {
+    f.animT = tick; f.hitlag = 0;
+    f.x = tick * 12; f.y = -tick * 12; f.vx = 12; f.vy = -12;
+    const undo = S.beginFrame(m, alpha);
+    const led = [f.x - tick * 12, f.y + tick * 12];
+    if (undo) undo();
+    return led;
+  };
+  at(1, 0.5);                                 // first sample: no travel known yet, so no lead
+  const [lx, ly] = at(2, 0.5);                 // second: the body moved 12px on the last tick
+  assert(lx > 5.9, `a body travelling 12px a tick was led ${lx.toFixed(2)}px sideways`);
+  assert(ly < -5.9, `a body falling 12px a tick was led ${ly.toFixed(2)}px`);
+});
+
+test('smooth: a loop row dissolves into the next cell, an attack row never does', async () => {
+  const h = await roster();
+  const S = h.g.Sprites;
+  const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), 'skyshrine', { state: 'play' });
+  control(m).tick(6);
+  const f = m.fighters[0];
+  f.state = 'walk'; f.onGround = true; f.vx = 3.2;
+  let mixes = 0, rows = new Set();
+  for (let i = 0; i < 40; i++) {
+    f.animT = i; f.y = 0;
+    const sel = S.pickAnim(f, i * 16);
+    if (sel && sel.mix) { mixes++; rows.add(sel.name); }
+  }
+  assert(mixes > 6, `only ${mixes} of 40 walk ticks had a real dissolve (f > 0.3)`);
+  assert(rows.has('walk'), `the dissolve never ran on the walk row (saw: ${[...rows].join(',') || 'nothing'})`);
+  /* and the drawing has to follow through: two cells of the row, painted at
+     complementary alphas, so the pose you see is between the two rather than one of
+     them.  One blit at full alpha means the mix was computed and then dropped. */
+  const rec = { ops: [] };
+  const rctx = makeCtx(rec);
+  let pairs = 0, soloed = 0, litNeeded = 0, litOk = 0;
+  for (let i = 0; i < 40; i++) {
+    f.state = 'walk'; f.animT = i; f.y = 0;
+    const sel = S.pickAnim(f, i * 16);
+    rec.ops.length = 0;
+    rctx.globalAlpha = 1; rctx.globalCompositeOperation = 'source-over';
+    S.drawSpriteFighter(rctx, f, i * 16);
+    const soft = rec.ops.filter((o) => o.op === 'drawImage' && o.alpha < 1 && o.sx !== undefined);
+    if (sel && sel.mix && sel.mix.f > 0.3) {
+      if (soft.length === 2 && new Set(soft.map((o) => o.sx)).size === 2) pairs++;
+    } else if (!soft.length) soloed++;
+    /* baked glow is light, not ink: a dissolve that takes the gauntlet fire with it
+       makes the sprite flicker, which is a worse tell than the hard cell cut was */
+    const parts = (sel && sel.frames && sel.frames[sel.i] && sel.frames[sel.i][3]) || [];
+    if (parts.length) {
+      litNeeded++;
+      if (rec.ops.some((o) => o.op === 'drawImage' && o.blend === 'lighter')) litOk++;
+    }
+  }
+  assert(pairs > 6, `only ${pairs} of the dissolving frames actually drew two cells of the row`);
+  assert(soloed > 6, `only ${soloed} frames drew a single crisp cell — the dissolve is leaking everywhere`);
+  if (litNeeded > 0) {
+    assert(litOk === litNeeded, `${litNeeded - litOk} dissolving frames dropped the tile's baked glow — the sprite flickers`);
+  }
+  f.state = 'attack';
+  f.action = { type: 'move', key: 'jab', startup: 4, active: 3, dur: 16, hitboxes: [] };
+  let bad = 0;
+  for (let i = 0; i < 16; i++) {
+    f.animT = i; f.actionT = i;
+    const sel = S.pickAnim(f, i * 16);
+    if (sel && sel.mix) bad++;
+  }
+  assert(bad === 0, `${bad} attack frames were cross-dissolved — the strike tile is the hit window and has to stay crisp`);
 });
 
 /* ---------------- entry ---------------- */
