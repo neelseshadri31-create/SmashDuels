@@ -12,7 +12,7 @@
    tools/atlascheck.js fails the build if index.html or the asset loader drifts from it,
    and the preview is served by tools/serve.py, which sends no-cache headers for the same reason,
    and `UI.diag().build` / the console banner say which build is actually running. */
-const BUILD = 'K13';
+const BUILD = 'K24';
 
 /* ---------- math / utils ---------- */
 const TAU = Math.PI * 2;
@@ -71,9 +71,12 @@ const INPUT = {
   },
   init() {
     addEventListener('keydown', e => {
+      const editing = e.target && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
+      if (editing) return;
       if (!e.repeat) { INPUT.pressed[e.code] = true; }
       INPUT.keys[e.code] = true;
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+      const inMatch = typeof UI !== 'undefined' && UI.current === 'screen-match';
+      if (inMatch && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
       if (e.code === 'Escape') window.dispatchEvent(new Event('ui-escape'));
       if (e.code === 'Enter' && !e.repeat) window.dispatchEvent(new Event('ui-enter'));
       if (e.code === 'KeyM' && !e.repeat) AUDIO.toggleMute();
@@ -113,7 +116,7 @@ const AUDIO = {
     if (AUDIO.ctx) return;
     try {
       AUDIO.ctx = new (window.AudioContext || window.webkitAudioContext)();
-      AUDIO.master = AUDIO.ctx.createGain(); AUDIO.master.gain.value = 0.6; AUDIO.master.connect(AUDIO.ctx.destination);
+      AUDIO.master = AUDIO.ctx.createGain(); AUDIO.master.gain.value = AUDIO.muted ? 0 : 0.6; AUDIO.master.connect(AUDIO.ctx.destination);
       AUDIO.sfxGain = AUDIO.ctx.createGain(); AUDIO.sfxGain.gain.value = 0.9; AUDIO.sfxGain.connect(AUDIO.master);
       AUDIO.musicGain = AUDIO.ctx.createGain(); AUDIO.musicGain.gain.value = 0.22; AUDIO.musicGain.connect(AUDIO.master);
     } catch (e) { AUDIO.enabled = false; }
@@ -157,7 +160,7 @@ const AUDIO = {
   },
   /* named SFX */
   sfx(name, opts = {}) {
-    if (!AUDIO.enabled) return;
+    if (!AUDIO.enabled || (SAVE.data && SAVE.data.settings && SAVE.data.settings.sfx === false)) return;
     switch (name) {
       case 'hit': {
         const power = clamp(opts.power ?? 0.3, 0, 1);
@@ -199,7 +202,7 @@ const AUDIO = {
   },
   /* simple looping chiptune */
   startMusic() {
-    if (!AUDIO.enabled || !AUDIO.ctx) return;
+    if (!AUDIO.enabled || !AUDIO.ctx || (SAVE.data && SAVE.data.settings && SAVE.data.settings.music === false)) return;
     if (AUDIO.musicTimer) return;
     const scale = [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19];
     const bass = [0, 0, 5, 5, 3, 3, 7, 7];
@@ -241,6 +244,7 @@ const SAVE = {
         settings: { music: true, sfx: true },
       };
     }
+    SAVE.data.settings = Object.assign({ music: true, sfx: true }, SAVE.data.settings || {});
     for (const k of ['valor', 'grim', 'astra', 'vesper', 'rook']) if (!SAVE.data.unlocked.includes(k)) SAVE.data.unlocked.push(k);
     return SAVE.data;
   },

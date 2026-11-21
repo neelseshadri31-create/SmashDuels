@@ -34,6 +34,235 @@ test('boot: modules load, classes resolve, a 1v1 steps', () => {
   }
 });
 
+/* =================== movement feel =================== */
+test('movement: all fighters run faster while keeping their distinct speeds', () => {
+  const oldRun = { valor: 5.4, grim: 4.1, astra: 4.3, vesper: 6.7, rook: 4.8 };
+  const speeds = {};
+  for (const key of Object.keys(oldRun)) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    m.rules.items = 'none';
+    const f = m.fighters[0];
+    f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+    control(m, () => ({ right: true })).tick(30);
+    speeds[key] = f.vx;
+    assert(f.vx > oldRun[key] * 1.1, `${key} run speed ${f.vx} is not appreciably faster`);
+  }
+  assert(speeds.vesper > speeds.valor && speeds.valor > speeds.rook && speeds.rook > speeds.astra && speeds.astra > speeds.grim,
+    'fighter run-speed ordering changed');
+});
+
+test('movement: direct reversals quickly regain full run speed in both directions', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    m.rules.items = 'none';
+    const f = m.fighters[0];
+    f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+    let direction = 1;
+    const ctl = control(m, () => ({ right: direction > 0, left: direction < 0 }));
+    ctl.tick(30);
+    for (const next of [-1, 1, -1, 1]) {
+      direction = next;
+      const before = f.vx;
+      ctl.tick(1);
+      assert(f.facing === next && (f.vx - before) * next > 0, `${key} did not steer into the turn`);
+      ctl.tick(5);
+      assert(f.vx * next > 0, `${key} still moving the wrong way after a turn`);
+      ctl.tick(24);
+      assert(f.vx * next > f.def.stats.run * 0.9 && f.state === 'run',
+        `${key} stuck below running speed after reversal: vx=${f.vx}, state=${f.state}`);
+    }
+  }
+});
+
+test('movement: overlapping direction inputs can transition into a run', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  m.rules.items = 'none';
+  const f = m.fighters[0];
+  f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+  let raw = { right: true };
+  const ctl = control(m, () => raw);
+  ctl.tick(30);
+  raw = { left: true, right: true }; ctl.tick(2);
+  raw = { left: true }; ctl.tick(30);
+  assert(f.vx < -f.def.stats.run * 0.9 && f.state === 'run',
+    `overlapping input left fighter at vx=${f.vx}, state=${f.state}`);
+});
+
+test('movement: running jumps retain momentum and resume running after landing', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    for (const direction of [-1, 1]) {
+      const { ctx } = run();
+      const m = newMatch(ctx, cast(1, [key]), 'terminal');
+      m.rules.items = 'none';
+      m.stage.platforms = [];
+      const f = m.fighters[0];
+      f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+      let jump = false;
+      const ctl = control(m, () => ({ left: direction < 0, right: direction > 0, jump }));
+      ctl.tick(25);
+      const speed = f.vx * direction;
+      jump = true; ctl.tick(1); jump = false;
+      assert(!f.onGround, `${key} failed to jump`);
+      ctl.tick(10);
+      assert(f.vx * direction > speed * 0.88, `${key} running jump lost too much speed`);
+      let landed = false;
+      for (let i = 0; i < 110; i++) { ctl.tick(1); if (f.onGround) { landed = true; break; } }
+      assert(landed, `${key} did not land`);
+      ctl.tick(15);
+      assert(f.onGround && f.state === 'run' && f.vx * direction > f.def.stats.run * 0.9,
+        `${key} did not resume running after landing: state=${f.state}, vx=${f.vx}`);
+    }
+  }
+});
+
+test('movement: changing direction in the air and on landing remains responsive', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    m.rules.items = 'none';
+    m.stage.platforms = [];
+    const f = m.fighters[0];
+    f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+    let direction = 1, jump = false;
+    const ctl = control(m, () => ({ left: direction < 0, right: direction > 0, jump }));
+    ctl.tick(25); jump = true; ctl.tick(4);
+    direction = -1; ctl.tick(15); jump = false;
+    assert(!f.onGround && f.vx < 0, `${key} could not turn in the air: vx=${f.vx}`);
+    let landed = false;
+    for (let i = 0; i < 110; i++) { ctl.tick(1); if (f.onGround) { landed = true; break; } }
+    assert(landed, `${key} did not land after air turn`);
+    ctl.tick(15);
+    assert(f.state === 'run' && f.vx < -f.def.stats.run * 0.9,
+      `${key} slowed to a walk after an air turn: ${f.vx}, ${f.state}`);
+  }
+});
+
+test('movement: a direction held through crouch and action recovery resumes running', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    m.rules.items = 'none';
+    const f = m.fighters[0];
+    f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+    let raw = { right: true, down: true };
+    const ctl = control(m, () => raw);
+    ctl.tick(15); raw = { right: true }; ctl.tick(15);
+    assert(f.state === 'run' && f.vx > f.def.stats.run * 0.9, `${key} did not run after crouch`);
+    f.startAttack('jab', m);
+    ctl.tick(f.def.moves.jab.frames + 20);
+    assert(f.state === 'run' && f.vx > f.def.stats.run * 0.9, `${key} did not run after attack`);
+  }
+});
+
+test('movement: dash windows do not linger through a jump and landing', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  m.rules.items = 'none';
+  const f = m.fighters[0];
+  f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+  let raw = { right: true };
+  const ctl = control(m, () => raw);
+  ctl.tick(1);
+  assert(f.dashT > 0, 'dash window did not start');
+  raw = { jump: true }; ctl.tick(1);
+  assert(f.dashT === 0, 'jump left a stale dash window');
+  raw = {}; for (let i = 0; i < 100 && !f.onGround; i++) ctl.tick(1);
+  ctl.tick(20);
+  assert(f.onGround && f.attackTypeFor() !== 'dashattack', 'stale dash changed a standing attack');
+});
+
+test('movement: shielding stops a held run and releasing it resumes movement', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  m.rules.items = 'none';
+  const f = m.fighters[0];
+  f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+  let shield = false;
+  const ctl = control(m, () => ({ right: true, shield }));
+  ctl.tick(20); shield = true; ctl.tick(15);
+  assert(f.state === 'shield' && f.shieldHP > 0 && Math.abs(f.vx) < 0.1,
+    `fighter moved through shield: state=${f.state}, vx=${f.vx}`);
+  shield = false; ctl.tick(15);
+  assert(f.state === 'run' && f.vx > f.def.stats.run * 0.9,
+    `fighter failed to run after releasing shield: state=${f.state}, vx=${f.vx}`);
+});
+
+test('movement: holding a direction on a soft platform after landing resumes running', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  m.rules.items = 'none';
+  const p = { x: -350, y: -100, cx: -350, cy: -100, w: 700, h: 12 };
+  m.stage.platforms = [p];
+  const f = m.fighters[0];
+  f.x = -200; f.y = -150; f.vx = 0; f.vy = 2; f.onGround = false; f.state = 'fall';
+  const ctl = control(m, () => ({ right: true }));
+  let landed = false;
+  for (let i = 0; i < 80; i++) { ctl.tick(1); if (f.onPlatform === p) { landed = true; break; } }
+  assert(landed, 'did not land on the soft platform');
+  ctl.tick(15);
+  assert(f.onPlatform === p && f.state === 'run' && f.vx > f.def.stats.run * 0.9,
+    `failed to resume running on platform: ${f.state}, vx=${f.vx}`);
+});
+
+test('movement: tapping jump eases ascent and gives a lower hop than holding', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const measure = (hold) => {
+      const { ctx } = run();
+      const m = newMatch(ctx, cast(1, [key]), 'terminal');
+      m.rules.items = 'none';
+      const f = m.fighters[0];
+      f.x = 0; f.y = m.stage.ground.y; f.onGround = true; f.state = 'idle';
+      let minY = f.y, prevVy = null, releaseDelta = 0, landed = false;
+      const ctl = control(m, () => ({ jump: m.frame < hold }));
+      for (let t = 0; t < 120; t++) {
+        ctl.tick(1);
+        if (t === 1) releaseDelta = f.vy - prevVy;
+        prevVy = f.vy; minY = Math.min(minY, f.y);
+        if (t > 2 && f.onGround) { landed = true; break; }
+      }
+      assert(landed, `${key} failed to land`);
+      return { height: m.stage.ground.y - minY, releaseDelta };
+    };
+    const tap = measure(1), held = measure(20);
+    assert(tap.height < held.height * 0.8 && tap.height > held.height * 0.3,
+      `${key} tap ${tap.height} vs held ${held.height}`);
+    assert(tap.releaseDelta > 0 && tap.releaseDelta < 3, `${key} jump release jerk ${tap.releaseDelta}`);
+  }
+});
+
+test('movement: landing preserves momentum, allows steering and settles', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    m.rules.items = 'none';
+    const f = m.fighters[0];
+    f.x = 0; f.y = m.stage.ground.y - 2; f.onGround = false; f.state = 'fall';
+    f.vx = 4; f.vy = 5;
+    const ctl = control(m, () => ({ right: true }));
+    ctl.tick(1);
+    assert(f.onGround && f.state === 'land', `${key} failed to land`);
+    const before = f.vx;
+    ctl.tick(2);
+    assert(f.vx > before * 0.65, `${key} lost too much momentum on landing: ${before} to ${f.vx}`);
+    ctl.tick(10);
+    assert(f.onGround && f.state !== 'land', `${key} landing did not settle`);
+  }
+});
+
+test('movement: an unused tech window is consumed on impact', () => {
+  const { ctx } = run();
+  const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  m.rules.items = 'none';
+  const f = m.fighters[0];
+  f.x = 0; f.y = m.stage.ground.y - 2; f.vy = 2; f.onGround = false;
+  f.state = 'fall'; f.hitstun = 0; f.techWindow = 10;
+  control(m, () => ({})).tick(20);
+  assert(f.techWindow === 0 && f.onGround, 'fighter repeatedly bounced on an expired tech opportunity');
+});
+
 /* =================== sides / collisions =================== */
 test('sides: no fighter is ever embedded in the stage slab', () => {
   const { ctx } = run();
@@ -217,6 +446,77 @@ test('sides: holding into the wall cannot park you in a ledge-hang', () => {
     worst = Math.max(worst, hang);
   }
   assert(worst <= 96, `a ledge-hang lasted ${worst} frames (1.6s of not being in the fight)`);
+});
+
+test('ledge: both sides catch, reset hang clock and keep one owner per lip', () => {
+  for (const side of [-1, 1]) {
+    const { ctx } = run(); const m = newMatch(ctx, cast(2, ['valor', 'grim']), 'terminal');
+    const [f, other] = m.fighters; const gd = m.stage.ground;
+    const edge = side < 0 ? gd.x : gd.x + gd.w;
+    f.x = edge + side * 20; f.y = gd.y + 65; f.onGround = false; f.vy = 2; f.state = 'fall'; f.stateT = 800;
+    f.action = { type: 'special', specialKey: 'n' }; f.inputBuffer.jump = 8;
+    assert(f.tryLedgeGrab(m), `side ${side}: no grab`);
+    assert(f.state === 'ledge' && f.stateT === 0 && !f.action && !f.onGround, 'grab did not reset stale state');
+    assert(f.facing === -side && f.inputBuffer.jump === 0, 'grab facing or buffer is wrong');
+    assert(f.hurtbox.y >= gd.y && f.hurtbox.h > 40, 'hang hurtbox is not below the lip');
+    assert(f.ledgeInvuln === 30, 'ledge invulnerability not granted');
+    other.x = edge + side * 20; other.y = gd.y + 30; other.vy = 2; other.onGround = false; other.state = 'fall';
+    assert(!other.tryLedgeGrab(m), 'two fighters occupied the same ledge');
+    const c = control(m); f.__raw = {}; other.__raw = {}; c.tick(1);
+    assert(f.ledgeInvuln === 29, 'ledge invulnerability should tick down once per frame');
+  }
+});
+
+test('ledge: ascending up special catches from below, but jumps, hitstun and down do not', () => {
+  const { ctx } = run(); const m = newMatch(ctx, cast(1, ['astra']), 'terminal');
+  const f = m.fighters[0], gd = m.stage.ground;
+  const place = () => { f.resetAt(gd.x - 20, gd.y + 60, 1); f.onGround = false; f.vy = -5; f.state = 'jump'; };
+  place(); assert(!f.tryLedgeGrab(m), 'normal upward jump snapped to ledge');
+  place(); f.state = 'special'; f.action = { type: 'special', specialKey: 'u' }; f.usedUpB = true;
+  assert(f.tryLedgeGrab(m) && !f.action && !f.usedUpB, 'up special failed to catch or reset');
+  place(); f.vy = 3; f.hitstun = 5; assert(!f.tryLedgeGrab(m), 'fighter in hitstun caught a ledge');
+  place(); f.vy = 3; f.input.down = true; assert(!f.tryLedgeGrab(m), 'holding down should avoid the ledge');
+  place(); f.vy = 3; m.stage.ledges = false; assert(!f.tryLedgeGrab(m), 'caught a disabled ledge');
+});
+
+test('ledge: recovery catches through the real physics update on standard and XL decks', () => {
+  for (const stage of ['terminal', 'grandrift']) for (const side of [-1, 1]) {
+    const { ctx } = run(); const m = newMatch(ctx, cast(1, ['valor']), stage);
+    const f = m.fighters[0], gd = m.stage.ground, edge = side < 0 ? gd.x : gd.x + gd.w;
+    const c = control(m); f.respawnT = 0; f.x = edge + side * 32; f.y = gd.y + 75;
+    f.vx = 0; f.vy = -4; f.onGround = false; f.state = 'fall';
+    f.__raw = { up: true, special: true }; c.tick(1); f.__raw = {};
+    let caught = f.state === 'ledge';
+    for (let i = 0; i < 15 && !caught; i++) { c.tick(1); caught = f.state === 'ledge'; }
+    assert(caught, `${stage} ${side}: rising recovery missed the lip`);
+    assert(!f.action && f.y === gd.y - 8, 'ledge left a recovery action running');
+  }
+});
+
+test('ledge: climb, jump, attack, roll and drop are distinct and responsive', () => {
+  for (const side of [-1, 1]) for (const [kind, raw] of [['climb', {up:true}], ['jump', {jump:true}], ['attack', {attack:true}], ['roll', {shield:true}], ['drop', {down:true}]]) {
+    const { ctx } = run(); const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+    const f = m.fighters[0], gd = m.stage.ground, edge = side < 0 ? gd.x : gd.x + gd.w;
+    f.respawnT = 0; f.snapLedge(m, side, edge); f.prevInput = {}; f.__raw = raw;
+    const c = control(m); c.tick(1);
+    assert(f.state !== 'ledge' && !f.ledge && f.ledgeCD > 0, `${side} ${kind}: trapped on ledge`);
+    if (kind === 'climb') assert(f.state === 'idle' && f.onGround, 'climb did not place fighter on deck');
+    if (kind === 'jump') assert(f.state === 'jump' && !f.onGround && f.vy < 0 && f.airJumpsLeft === f.def.stats.airJumps, 'ledge jump must rise without spending double jump');
+    if (kind === 'attack') assert(f.state === 'attack' && f.action.key === 'jab', 'ledge attack missing');
+    if (kind === 'roll') assert(f.state === 'roll' && f.rollDir === -side, 'ledge roll did not head inward');
+    if (kind === 'drop') {
+      assert(f.state === 'fall' && f.vx * side > 0 && f.ledgeInvuln === 0, 'drop did not move away or clear invulnerability');
+      f.__raw = {}; c.tick(3); assert(f.state !== 'ledge', 'drop instantly regrabbed');
+    }
+  }
+});
+
+test('ledge: recovery input climbs after a short hang, no input eventually climbs', () => {
+  const { ctx } = run(); const m = newMatch(ctx, cast(1, ['rook']), 'terminal');
+  const f = m.fighters[0], gd = m.stage.ground; const c = control(m);
+  f.respawnT = 0; f.snapLedge(m, -1, gd.x); f.__raw = { right:true };
+  c.tick(5); assert(f.state === 'ledge', 'held recovery climbed before grip');
+  c.tick(3); assert(f.state !== 'ledge' && f.onGround, 'held inward direction did not climb');
 });
 
 test('ledge: a hang nobody presses a button for still ends', () => {
@@ -547,6 +847,8 @@ function teamsMatch() {
       for (let b = a + 1; b < m.fighters.length; b++) {
         const A = m.fighters[a], B = m.fighters[b];
         if (A.eliminated || B.eliminated || A.state === 'respawn' || B.state === 'respawn') continue;
+        // A grab intentionally holds the victim close until the throw or timeout.
+        if (A.grabbing === B || B.grabbing === A) continue;
         if (Math.abs(A.y - B.y) > 40) continue;
         const gap = Math.abs(A.x - B.x);
         worstOverlap = Math.max(worstOverlap, 52 - gap);
@@ -789,6 +1091,94 @@ test('dash: the lunge is what carries the run attack onto its target', () => {
   assert(t.damage > 0, `the dummy at +14px past the standing box took ${t.damage}% — the lunge does not close the gap`);
 });
 
+/* Each roster recovery must be reachable through the actual input path, not
+   just by calling startSpecial directly. */
+test('up special: all five fighters rise from jump + special and up + special', () => {
+  const keys = ['valor', 'grim', 'astra', 'vesper', 'rook'];
+  for (const key of keys) for (const input of [{ jump: true, special: true, right: true }, { up: true, special: true }]) {
+    const { ctx } = run();
+    const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    const f = m.fighters[0]; const c = control(m);
+    f.respawnT = 0; f.spawnProtect = 0; f.x = 0; f.y = -350; f.onGround = false; f.state = 'fall'; f.vx = 0; f.vy = 0;
+    f.fastfalled = true; f.__raw = input; c.tick(1);
+    assert(!f.fastfalled, `${key}: recovery did not cancel fast-fall`);
+    assert(f.action && f.action.specialKey === 'u', `${key}: combo selected ${f.action && f.action.specialKey}`);
+    assert(f.usedUpB, `${key}: recovery was not marked used`);
+    assert(f.inputBuffer.jump === 0, `${key}: combo left a jump buffered`);
+    const start = f.y; f.__raw = {}; c.tick(20);
+    assert(f.y < start - 60, `${key}: up special did not rise enough (${(start - f.y).toFixed(1)}px)`);
+  }
+});
+
+test('up special: jump held before special activates recovery without a second jump', () => {
+  const { ctx } = run(); const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  const f = m.fighters[0]; const c = control(m);
+  f.respawnT = 0; f.x = 0; f.y = 0; f.onGround = true; f.state = 'idle';
+  f.__raw = { jump: true }; c.tick(4);
+  assert(!f.onGround && f.state === 'jump', 'normal jump did not begin');
+  const remaining = f.airJumpsLeft;
+  f.__raw = { jump: true, special: true }; c.tick(1);
+  assert(f.action && f.action.specialKey === 'u', 'held jump + special did not activate up special');
+  assert(f.airJumpsLeft === remaining, 'up special consumed an extra jump');
+});
+
+test('up special: only once per airtime, restored by landing, ledge and respawn', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run(); const m = newMatch(ctx, cast(1, [key]), 'terminal');
+    const f = m.fighters[0]; const c = control(m);
+    f.respawnT = 0; f.spawnProtect = 0; f.x = 0; f.y = -400; f.onGround = false; f.state = 'fall'; f.vy = 0;
+    f.__raw = { up: true, special: true }; c.tick(1);
+    f.__raw = {}; c.tick(f.def.specials.up.frames + 2);
+    // Keep the second attempt in open air regardless of fighter or stage geometry.
+    f.y = -450; f.vy = 0; f.onGround = false; f.state = 'fall';
+    f.__raw = { up: true, special: true }; c.tick(1);
+    assert(!f.action || f.action.specialKey !== 'u', `${key}: repeated recovery in the air`);
+    f.__raw = {}; f.y = -2; f.vy = 4; f.onGround = false; f.state = 'fall'; c.tick(1);
+    assert(f.onGround && !f.usedUpB, `${key}: landing did not restore recovery`);
+    c.tick(6); // let ordinary landing lag finish
+    f.__raw = { up: true, special: true }; c.tick(1);
+    assert(f.action && f.action.specialKey === 'u', `${key}: recovery unavailable after landing`);
+    f.snapLedge(m, -1, m.stage.ground.x);
+    assert(!f.usedUpB, `${key}: ledge did not restore recovery`);
+    f.usedUpB = true; f.resetAt(0, -300, 1);
+    assert(!f.usedUpB, `${key}: respawn reset did not restore recovery`);
+  }
+});
+
+test('up special: other directions, jump and final smash remain distinct', () => {
+  const { ctx } = run(); const m = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  const f = m.fighters[0]; const c = control(m);
+  const air = () => { f.resetAt(0, -350, 1); f.respawnT = 0; f.onGround = false; f.state = 'fall'; f.__raw = {}; };
+  for (const [input, expected] of [[{ special: true }, 'n'], [{ right: true, special: true }, 's'], [{ down: true, jump: true, special: true }, 'd']]) {
+    air(); f.__raw = input; c.tick(1);
+    assert(f.action && f.action.specialKey === expected, `expected ${expected}, got ${f.action && f.action.specialKey}`);
+  }
+  air(); const before = f.airJumpsLeft; f.__raw = { jump: true }; c.tick(1);
+  assert(f.airJumpsLeft === before - 1 && !f.usedUpB, 'ordinary double jump changed');
+  f.resetAt(0, m.stage.ground.y, 1); f.onGround = true; f.state = 'idle'; f.respawnT = 0; f.hasSmashBall = true;
+  f.__raw = { jump: true, special: true }; c.tick(1);
+  assert(f.finalActive > 0, 'smash ball should retain its grounded activation priority');
+});
+
+test('up special: each recovery can damage a nearby opponent once', () => {
+  for (const key of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
+    const { ctx } = run(); const m = newMatch(ctx, cast(2, [key, 'rook']), 'terminal');
+    const f = m.fighters[0], enemy = m.fighters[1], c = control(m);
+    f.respawnT = enemy.respawnT = 0; f.spawnProtect = enemy.spawnProtect = 0;
+    f.x = 0; f.y = -320; f.vx = f.vy = 0; f.onGround = false; f.state = 'fall';
+    enemy.x = 0; enemy.y = -900; enemy.onGround = false; enemy.state = 'fall';
+    f.__raw = { up: true, special: true }; c.tick(1); f.__raw = {};
+    const sp = f.def.specials.up;
+    for (let i = 0; i < sp.startup + 5; i++) {
+      // For the teleport place the target at its destination, otherwise near the rise.
+      enemy.x = f.x; enemy.y = key === 'astra' && !f.specialData.tpFired ? f.y - sp.dist - 50 : f.y - 70;
+      enemy.vx = enemy.vy = 0; enemy.onGround = false; enemy.state = 'fall'; enemy.hitstun = 0; enemy.invincT = 0;
+      c.tick(1);
+    }
+    assert(Math.abs(enemy.damage - sp.damage) < .01, `${key}: recovery dealt ${enemy.damage}%, expected ${sp.damage}%`);
+  }
+});
+
 test('dash: a roll rolls, and a rush special covers the distance its data promises', () => {
   const { ctx } = run();
   const m = newMatch(ctx, cast(2, ['grim', 'rook']), 'skyshrine', { state: 'play' });
@@ -1013,8 +1403,9 @@ test('decks: every stage is playable, and the copied ones keep the template they
   for (const k of keys) {
     const s = STAGES[k], g = s.ground;
     assert(s.name && s.sub && s.theme && s.accent && s.bg.length === 3, `${k}: a deck needs name, sub, theme, accent and a 3-stop sky`);
-    assert(g.w >= 800 && g.w <= 1400, `${k}: deck is ${g.w}px wide — off the thumb scale, out of the camera's range`);
-    assert(g.x >= WORLD.blast.left && g.x + g.w <= WORLD.blast.right, `${k}: the deck reaches past the blast lines`);
+    assert(g.w >= 800 && g.w <= 2200, `${k}: unsupported deck width ${g.w}px`);
+    const zone = newMatch(h.ctx, cast(1, ['valor']), k).blast;
+    assert(g.x >= zone.left && g.x + g.w <= zone.right, `${k}: the deck reaches past the blast lines`);
     for (const p of s.platforms) {
       assert(p.x >= g.x - 40 && p.x + p.w <= g.x + g.w + 40, `${k}: a platform hangs off the deck it sits over`);
       assert(p.y < -60, `${k}: a platform at y=${p.y} is inside the deck, not above it`);
@@ -1029,19 +1420,44 @@ test('decks: every stage is playable, and the copied ones keep the template they
       assert(!!s.platforms.find((p) => p.y >= -140) === form.low, `${k}: the low centre platform this form is defined by is missing`);
       assert((s.hazard && s.hazard.type) === form.hazard, `${k}: hazard is ${s.hazard && s.hazard.type}, expected ${form.hazard}`);
     }
-    // and it plays: four seconds of holding left must reach the far edge of the deck —
+    // and it plays: enough time holding left must reach the far edge of the deck —
     // a wall, a platform in the way or a fighter that cannot turn is the usual way a
     // hand-tuned layout quietly stops being playable.  Ledges are allowed to catch them.
     const m = newMatch(h.ctx, cast(2, ['grim', 'valor']), k, { state: 'play' });
-    m.rules.items = 'off';
+    m.rules.items = 'none';
     const f = m.fighters[0];
     let edge = 1e9;
     const ctl = control(m, (ff) => (ff === f ? { left: true } : {}));
-    for (let i = 0; i < 240; i++) { ctl.tick(1); edge = Math.min(edge, f.x); }
+    for (let i = 0; i < 340; i++) { ctl.tick(1); edge = Math.min(edge, f.x); }
     assert(m.frame > 200, `${k}: the match stopped ticking`);
     assert(edge <= m.stage.ground.x + 40 || f.eliminated,
-      `${k}: a fighter held at the left edge for 4s got only to x=${edge.toFixed(0)} of deck edge ${m.stage.ground.x}`);
+      `${k}: a fighter held at the left edge got only to x=${edge.toFixed(0)} of deck edge ${m.stage.ground.x}`);
   }
+});
+
+test('XL stages: wider decks keep recoverable blast zones and projectiles', () => {
+  const { ctx, g } = run();
+  for (const key of ['grandrift', 'colossalstadium', 'horizon']) {
+    const m = newMatch(ctx, cast(2, ['valor', 'grim']), key);
+    m.rules.items = 'none';
+    const gd = m.stage.ground, f = m.fighters[0];
+    assert(gd.w > 1400, `${key} is not larger than existing decks`);
+    assert(m.blast.left <= gd.x - 650 && m.blast.right >= gd.x + gd.w + 650,
+      `${key} lacks recovery space beyond the deck`);
+    f.x = gd.x + gd.w + 300; f.y = -100; f.onGround = false;
+    assert(!f.checkBlastNow(m), `${key} KO'd a fighter in the recovery space`);
+    m.spawnProjectile({ owner: f, x: gd.x + gd.w + 220, y: -100, vx: 1 });
+    const p = m.projectiles[0]; p.update(m);
+    assert(!p.dead, `${key} removed a projectile inside its blast zones`);
+    f.x = m.blast.right + 1;
+    assert(f.checkBlastNow(m), `${key} failed to KO past the blast zone`);
+    m.cam.W = 400; m.cam.H = 225;
+    m.cam.update(m.fighters);
+    assert(m.cam.tz < 0.42, `${key} camera cannot zoom out for a narrow viewport`);
+  }
+  const regular = newMatch(ctx, cast(1, ['valor']), 'terminal');
+  assert(regular.blast.left === g.WORLD.blast.left && regular.blast.right === g.WORLD.blast.right,
+    'standard stage blast zones changed');
 });
 
 /* ---------------- entry ---------------- */

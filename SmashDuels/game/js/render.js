@@ -4,21 +4,9 @@
 'use strict';
 
 const Sprites = (() => {
-  /* ============================================================
-     Roster atlases  —  assets/atlas/<key>.png + <key>.json
-     Produced by tools/slice_roster.py from roster/*_spritesheet.png:
-     ~100 hand-authored frames per fighter (idle/walk/run/jump/fall/land,
-     dash, rolls, spot-dodge, 3 taunts, jab, 3 tilts, 3 smashes, 5 aerials,
-     4 specials) plus derived reactions (hurt, launch, KO, shield-break,
-     grabbed, grab, throw, air-dodge, crouch, down, get-up, respawn).
-
-     Every frame carries an anchor (cell centre x, row baseline y) in tile
-     space, so all frames of a fighter share one origin and one scale — that
-     is what stops the old per-frame-trimmed art from jittering and from
-     "facing the wrong way" mid-animation.
-     ============================================================ */
-  const KEYS = ['valor', 'grim', 'astra', 'vesper', 'rook'];
+  /* Fighter art is sliced into per-frame atlases; item art loads separately. */
   const A = {};                     // key -> {img, meta, tiles, anims, scale}
+  const LEDGE_ART = {};             // separately keyed, approved hanging poses
   const ITEM_ART = {};              // item key -> {img, w, h, mirror} | false
   const VARIANTS = [
     { hue: 0,   alpha: 0.00, light: 0.00 },  // default palette (sheet art)
@@ -79,11 +67,11 @@ const Sprites = (() => {
        so a held turn is never a freeze frame. */
     turn:        { anim: 'crouch',      hold: 1, pulse: 0.45, fallback: 'idle' },
     crouch:      { anim: 'crouch',      hold: 1, pulse: 0.5 },
-    jump:        { anim: 'jump',        step: 4, to: 0.8, once: 1 },
-    doublejump:  { anim: 'jump',        step: 3, from: 0.55, once: 1 },
-    fall:        { anim: 'fall',        hold: 1, pulse: 0.18 },
+    jump:        { anim: 'jump',        step: 2, once: 1 },
+    doublejump:  { anim: 'jump',        step: 2, once: 1 },
+    fall:        { anim: 'fall',        step: 4 },
     fastfall:    { anim: 'fall',        step: 4, from: 0.4, once: 1 },
-    land:        { anim: 'land',        step: 2, to: 0.8, once: 1 },
+    land:        { anim: 'land',        step: 1, once: 1 },
     shield:      { anim: 'shield',      hold: 1, pulse: 0.7 },
     shieldbreak: { anim: 'shieldbreak', step: 3, once: 1 },
     roll:        { anim: 'rollfwd',     fit: 1 },
@@ -400,43 +388,31 @@ const Sprites = (() => {
   /* Same reason as `BUILD` in core.js: an atlas whose PNG and JSON come from two
      different builds draws tiles from the wrong rectangles. */
   const VQ = '?v=' + (typeof BUILD !== 'undefined' ? BUILD : '0');
-  let atlasWarned = false;
   function load() {
-    for (const k of KEYS) {
+    if (typeof fetch !== 'function' || typeof Image !== 'function') return;
+    fetch(`assets/ledge/anchors.json${VQ}`).then(r => r.ok ? r.json() : Promise.reject())
+      .then(anchors => {
+        for (const [key, anchor] of Object.entries(anchors)) {
+          const img = new Image();
+          img.onload = () => { LEDGE_ART[key] = { img, anchor, tint: {} }; };
+          img.src = `assets/ledge/${key}.png${VQ}`;
+        }
+      }).catch(() => {}); // fall back to the atlas if an optional pose cannot load
+    for (const k of ['valor', 'grim', 'astra', 'vesper', 'rook']) {
       fetch(`assets/atlas/${k}.json${VQ}`)
-        .then(r => (r && r.ok) ? r.json() : Promise.reject(new Error('no atlas ' + k)))
+        .then(r => r && r.ok ? r.json() : Promise.reject(new Error('missing atlas ' + k)))
         .then(meta => {
           const img = new Image();
           img.onload = () => {
             const refH = Math.max(24, meta.refH || 64);
-            const A_ = {
-              img, meta,
-              tiles: meta.tiles,
-              anims: Object.assign({}, meta.anims, meta.derived || {}),
-              unit: refH,
-              scale: (TARGET_H[k] || 108) / refH,
-              tint: {},
-              desRows: new Set(meta.desmerged || []),   // rows re-cut from merged strips
-              strike: {},          // row -> { k, wind }  which tile is the blow
-              box: {},             // row -> [x0, y0, x1, y1] ink extents, local px
-              bodyBox: {},         // the same rows measured without baked VFX
-              neutral: null,       // the resting silhouette, the reference for all of it
-            };
-            measure(A_);
-            A[k] = A_;
+            A[k] = { img, meta, tiles: meta.tiles, anims: meta.anims, unit: refH,
+              scale: (TARGET_H[k] || 108) / refH, tint: {}, desRows: new Set(),
+              strike: {}, box: {}, bodyBox: {}, neutral: null };
           };
           img.onerror = () => { A[k] = null; };
           img.src = `assets/atlas/${k}.png${VQ}`;
         })
-        .catch(() => {
-          A[k] = null;
-          if (!atlasWarned) {
-            atlasWarned = true;
-            console.warn('[rift] animation atlases did not load — drawing the vector fallback. '
-              + 'Open the game through a local server (python3 -m http.server), not file://, '
-              + 'where the browser will not fetch JSON.');
-          }
-        });
+        .catch(() => { A[k] = null; });
     }
   }
 
@@ -808,7 +784,11 @@ const Sprites = (() => {
     const c = clockFor(f, name, spec);
     let swing = null;
     if (phase) {
-      i = attackIndex(f, frames, at.strike[name]);
+      // Play the whole authored sequence over the action, including effect-only
+      // frames. Attack collision remains driven by the original move data.
+      const dur = Math.max(n, (act && act.dur) || n);
+      i = f.charging ? Math.min(n - 1, Math.floor(n * 0.35))
+        : clamp(Math.floor((f.actionT || 0) * n / dur), 0, n - 1);
       if (f.charging) wob = Math.sin((f.chargeT | 0) * 0.42);       // the windup shakes
       swing = attackSwing(f, frames.length >= 3 ? 0.34 : frames.length === 2 ? 0.72 : 1);
     } else {
@@ -1365,6 +1345,25 @@ const Sprites = (() => {
    * Rotations for hitstun/launch are baked into the derived tiles by the
    * slicer, so the renderer must not lean them a second time. */
   function drawSpriteFighter(ctx, f, time) {
+    const hang = LEDGE_ART[f.key];
+    if (f.state === 'ledge' && f.ledge && hang) {
+      const scale = (TARGET_H[f.key] || 108) * 1.15 * (f.scale || 1) / hang.img.height;
+      const vi = (f.palIdx || 0) % VARIANTS.length;
+      const img = vi === 0 ? hang.img : tinted(hang, vi);
+      ctx.save();
+      if (f.ledgeInvuln > 0 && Math.floor(f.animT / 4) % 2 === 0) ctx.globalAlpha = .65;
+      if (f.buffs.metal > 0) ctx.filter = 'grayscale(0.6) brightness(1.15)';
+      // The approved art faces right; mirror it on the right-hand ledge.
+      // Its hand, rather than its feet, is the point fixed to the stage lip.
+      ctx.translate(f.ledge.x, f.y + 8);
+      // A small anchored sway keeps a single approved pose alive; the gripping
+      // hand remains fixed at the ledge instead of sliding around.
+      ctx.rotate(Math.sin(f.animT * .055) * .025 * f.facing);
+      ctx.scale(f.facing * scale, scale);
+      ctx.drawImage(img, -hang.anchor.handX, -hang.anchor.handY);
+      ctx.restore();
+      return true;
+    }
     const sel = pickAnim(f, time);
     if (!sel) return false;
     const at = sel.at, ent = sel.frames[sel.i];
@@ -1519,7 +1518,7 @@ const Sprites = (() => {
 
   return { drawFighter, getPose, load, drawSpriteFighter, ready, pickFrame, pickAnim,
     atlas, height, artReach, attackBox, strikeIndex, attackPhase, vfxGate, usable,
-    loadItems, itemArt, ITEM_ART,
+    loadItems, itemArt, ITEM_ART, LEDGE_ART,
     setBlend, setSmooth, beginFrame, STATE_ANIM, MOVE_ANIM, SPECIAL_ANIM, VARIANTS };
 })();
 

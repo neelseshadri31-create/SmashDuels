@@ -43,6 +43,9 @@ class CPU {
     this.rollCd = Math.max(0, this.rollCd - 1);
     this.tauntCd = Math.max(0, this.tauntCd - 1);
 
+    // Choose an intentional get-up instead of waiting for a random combat plan.
+    if (f.state === 'ledge') { if (f.stateT > 10) o.up = true; return o; }
+
     // ---- offstage recovery is handled every frame (high priority)
     const gd = match.stage.ground;
     const onStage = f.x > gd.x - 40 && f.x < gd.x + gd.w + 40 && f.y < gd.y + 40;

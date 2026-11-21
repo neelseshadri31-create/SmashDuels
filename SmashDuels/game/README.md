@@ -13,127 +13,34 @@ python3 -m http.server 8080
 # → http://localhost:8080
 ```
 
-## Animation
+## Fighter presentation
 
-Every fighter draws on **~95 hand-authored frames** sliced from its concept sheet into a
-packed atlas: `assets/atlas/{key}.png` + `assets/atlas/{key}.json` (built by
-`tools/slice_roster.py`, which reads `roster/*_spritesheet.png`).
+The five supplied fighter sheets are in `../assets-src/characters/`. Their 290
+individually cut frames, including standalone effects, are packed into runtime atlases
+in `assets/atlas/` and used for movement, attacks and specials. Fighter select also
+shows portraits and appearance descriptions. Item artwork is unchanged.
 
-| group | animations |
-|---|---|
-| locomotion | idle · walk · run · jump · fall · land · dash |
-| ground | jab · utilt · stilt (forward tilt) · dtilt · usmash · ssmash · dsmash |
-| aerial | nair · fair · bair · uair · dair |
-| specials | nspecial · sspecial · uspecial · dspecial |
-| defence / misc | shield · shieldbreak · spotdodge · rollfwd · rollback · airdodge · grabbed · grab · throw · down · getup · respawn · taunt 1-3 |
-| reactions | hurt · launch · ko · crouch (derived: the source rows are re-composed with a lean, squash and a hit flash) |
-
-Each frame carries an anchor — the fitted cell's centre-x and the row's feet line — so a
-fighter stays planted while its animation plays instead of skating or jittering. VFX that
-was drawn separately from the pose (crescents, dust, projectiles) rides in the frame's
-`fx` list and is blitted additively.
-
-`render.js` maps game state → animation (`STATE_ANIM`), and an attack's `startup / active /
-dur` → a fraction of its row (`MOVE_ANIM`, `SPECIAL_ANIM`), so windup → strike → settle
-lines up with the hitbox instead of a fixed frame counter. Palettes are a per-variant tint
-of the whole atlas (6 variants: default, blue, green, magenta, gold, shadow). If a sheet is
-missing, `drawFighter` falls back to the procedural vector fighter.
-
-**Fluidity is a draw-rate problem, not a frame-count one.** The simulation is a fixed 60 Hz
-step, so on a 120/144 Hz panel half the frames would show the same tick twice — 13 stuck
-frames across a run row, measured. `Sprites.beginFrame(match, alpha)` therefore leads each drawn
-frame a fraction of a tick into the next one (fighters, items, projectiles, summons *and* the
-camera, so nothing slides relative to anything else), clamped to the travel the step actually
-made: an impulse above 1.25 px/tick, a hitlag freeze or a wall that scrubs the velocity cancels
-the lead for that frame rather than drawing a move the sim then takes back. At 60 Hz `alpha` is
-0 and the whole path is a no-op, byte for byte.
-
-Two rules keep the picture and the collision honest, because the sheets do not always
-draw a whole swing: **an attack's phases drive both** (`vfxGate` fades a baked crescent
-in across the wind-up and holds it at full strength exactly while the hitbox is live;
-`attackSwing` adds a coil → throw lean/squash so a 1-tile row still reads as anticipation
-then impact), and **the art gets a vote on the hitbox but only along the axis the blow
-travels** — a drawn limb may extend a box up to ~0.85 of a body-height, never sideways
-for a horizontal swing, and the *hurt* box measures the figure alone, not its effects.
-Rows the slicer could not split are re-cut by `tools/atlas_desmerge.py` from the shipped
-atlas PNG (no re-slicing), which is what turned the last merged filmstrips into animation.
-
-Where a row is *short* rather than merged — the sheets only drew two dash frames, two roll
-frames, and no dash-attack row at all — re-cutting cannot help, so the frames are drawn:
-`tools/slice_rows.py` takes a generated sheet of poses on a flat magenta field, splits it by
-ink mass (rows, then cells), scales a whole row to that fighter's reference height, keys its
-baked effect into a separate overlay tile so `vfxGate` can still fade it — but leaves the
-frame as one tile when the biggest blob in it is too flat to be a pose, because a smoke puff
-that happens to be wider than the ninja beside it is not the body — packs the tiles into
-space the atlas is not already using (growing the canvas if there is none) and rewrites the
-row in the JSON.  Idempotent per row.
-
-`--revert` is not: it restores the atlas to the state saved **before the first injection ever
-ran**, so it takes the other injected rows with it.  Undo *one* batch by restoring that key's
-`json` + `png` from git (`git show HEAD:./game/assets/atlas/grim.json > …`, both files) and
-re-running the tool; `atlascheck`'s `rows:` test is what tells you if you forgot.
-
-Pillow is the only dependency, and a sandbox that has just been rebuilt will not have it in the
-system Python (PEP 668): `python3 -m venv /tmp/venv && /tmp/venv/bin/pip install pillow`.
-
-```bash
-/tmp/venv/bin/python tools/slice_rows.py --key grim \
-        --sheet assets-src/rows/grim-sheetB.png --rows dashattack,dsmash --cells 8
-/tmp/venv/bin/python tools/slice_rows.py --key grim --sheet assets-src/rows/grim-sheetA.png \
-        --rows idle,run,walk,jump,fall,land --cells 8,8,8,8,8,8 --dry --preview /tmp/prev.png   # look first
-```
-
-Rows are matched from the **top** of the sheet, so `--rows walk,run` against a three-row sheet
-labels row 1 `walk` and row 2 `run` and only warns that a row went unused.  Either list every
-row in order, or crop the sheet down to the rows you want (the `--dry` preview shows which
-band became which row before a byte is written).
-
-### Watching an animation without a browser
-
-`tools/film.js` drives the engine at a fixed tick and writes down every `drawImage` the
-renderer asked for — plus the live hitbox and hurtbox of that same tick — and
-`tools/film_render.py` pastes the real atlas tiles through those transforms into a contact
-sheet and an animated GIF per fighter (needs Pillow; nothing else):
-
-```bash
-node tools/film.js valor                     # record one fighter's rows at 60 Hz
-node tools/film.js grim rushB                # …the reported case: run, then B, into a foe
-node tools/film.js valor --hz=120 --blend=0  # …as a 120 Hz panel sees it, blending off
-python3 tools/film_render.py valor            # → anim-films/valor.film.png / .gif
-python3 tools/film_render.py --rows fsmash,walk,dash   # just those rows
-python3 tools/film_render.py valor --cols 13  # tile count per row (13 = one per tick)
-```
-
-Both the contact sheet and the GIF draw the tile the renderer asked for, so the dissolve
-(`render.js`'s `mix`, which fades a loop row into its next cell) is visible in them — and if a
-frame ever looks wrong there but right in the browser, believe the browser and check that
-`tools/film_render.py` is clipping to each tile's source rect: sampling an atlas without
-clipping bleeds the neighbouring art through, and a 4px dust speck becomes a 170px flame.
-
-Two switches are worth knowing when a film disagrees with your eyes: `Sprites.setSmooth(false)`
-turns off the dissolve between cells (hard cuts, the retro read), and `--blend=0` turns off the
-sub-tick position lead — which on a 120 Hz panel takes grim's walk/run from 0 stuck frames back
-to 30 each, so a row that films smooth and feels smooth is the same measurement twice.
-
-`--hz` records the frames *between* ticks as well as the tick itself, and the contact sheet
-then counts **stuck frames**: consecutive drawn frames that blit the same tile at the same x/y.
-That is the whole of "running feels laggy" as a number, and it is how a blend or a lead gets
-reviewed without a browser — a stuck cell is outlined in red, a blended one is tagged `α0.5`.
-`--blend=0` turns the sub-tick lead off for the comparison.
-
-It is the shipped `Sprites.drawSpriteFighter`, so what the film shows is what the game
-paints; it is not a browser, so treat it as ground truth for timing, anchors, stride sync
-and box-vs-art, not for shader-level fidelity.
+The reviewed row and cell boundaries are maintained in `tools/build_character_sheets.py`.
+Rebuild with Pillow and NumPy installed: `python tools/build_character_sheets.py`.
+Effect-only cells keep the previous fighter pose underneath them. Some source art has
+overlapping trails; these are separated as far as the supplied artwork permits.
 
 ## Controls
 
-**Player 1** — `A`/`D` move · `W` or `Space` jump · `S` crouch / fast-fall / drop through ·
+**Player 1** — `A`/`D` move · `W` aim up · `Space` jump · `S` crouch / fast-fall / drop through ·
 `F` attack · `G` special · `C` shield (air dodge in the air) · `V` grab
 
-**Player 2** — Arrows to move/jump · `Numpad 1` attack · `Numpad 2` special · `Numpad 3` jump ·
+**Player 2** — Arrows to move/aim · `Numpad 1` attack · `Numpad 2` special · `Numpad 3` jump ·
 `Numpad 0` shield · `Numpad 4` grab
 
 Gamepads are detected automatically for both players. `M` mutes audio, `Esc` pauses.
+
+Each fighter has an **up special**: press up + special, or hold jump and press
+special (P1 `W`+`G` or `Space`+`G`; P2 `↑`+`Numpad 2` or `Numpad 3`+
+`Numpad 2`). The same inputs work on gamepad and touch. You can steer the rising
+recovery left/right; it is usable once per airtime and resets on landing, ledge
+grab, or respawn. Explicit down + special still selects the down special.
+
 
 ## Implemented systems
 
@@ -173,10 +80,12 @@ if the art is missing the old vector icon still draws, so nothing can blank.
 **Final Smash (§7)** — Smash Ball spawns and floats, breaks under damage, grants an
 aura; press special for a screen-clearing super.
 
-**Stages (§9)** — 16 decks with pass-through platforms, moving platforms (a fighter — and an
-item — standing on a mover rides its `p.dx/p.dy` for the tick), and hazards (lava pools, timed
+**Stages (§9)** — 19 selectable decks, including three extra-wide XL arenas. The roster includes
+pass-through platforms, moving platforms (a fighter — and an item — standing on a mover rides
+its `p.dx/p.dy` for the tick), and hazards (lava pools, timed
 pillar) that re-arm on a 45-tick `HAZARD_REHIT` rather than billing you every frame of contact.
-Ten of them are the Super Smash Bros. Ultimate *templates* copied as geometry: the Battlefield
+The XL decks have expanded horizontal blast zones for recovery, and the camera can zoom out to fit them.
+Ten of the standard decks are the Super Smash Bros. Ultimate *templates* copied as geometry: the Battlefield
 form (flat deck, two soft platforms to the sides, one high in the middle, one low over the
 centre), its Big and Small sizes, the Final Destination / Ω form (the same deck with the soft
 platforms deleted), and the tournament layouts — Pokémon Stadium 2, Town & City, Smashville,
@@ -201,58 +110,35 @@ chiptune and SFX via WebAudio.
 
 | Fighter | Archetype | Signature specials |
 |---|---|---|
-| **Valor** the Swordsman | All-rounder | Lunar Slash · Rush Strike · Skyward Ascent · Guardian Stance |
-| **Grim** the Colossus | Heavyweight | Magma Fist · Rush Strike · Skyward Ascent · Guardian Stance |
+| **Valor** the Rift Blade | All-rounder | Lunar Slash · Rush Strike · Skyward Ascent · Guardian Stance |
+| **Grim** the Colossus | Heavyweight | Magma Fist · Rush Strike · Titan Rise · Guardian Stance |
 | **Astra** the Starweaver | Floaty zoner | Shooting Star Bolt · Comet Rush · Star Blink · Gravity Orb |
 | **Vesper** the Shade | Rushdown | Kunai Barrage · Shadowstep Dash · Viper Ascendant · Smoke Counter |
-| **Rook** the Hexshot | Projectile zoner | Hex Bullet Volley · Rune Lasso · Drone Grapple · Rune Mine |
-
-Fighter art is sliced out of the generated concept sheets (`roster/*.png`) by
-`tools/slice_roster.py`; the sheet's dithered background is keyed to transparency per
-component, and tiles are deduplicated so a reused pose costs one atlas rect.
-
-(needs numpy + scipy + Pillow; run from the project root, i.e. `SmashDuels/`)
-
-```bash
-python3 tools/slice_roster.py --report   # audit what the slicer recovered
-python3 tools/slice_roster.py            # rewrite game/assets/atlas/*
-```
+| **Rook** the Rift Brawler | Projectile zoner | Hex Bullet Volley · Rune Lasso · Drone Grapple · Rune Mine |
 
 ### Which build the browser is running
 
 `js/core.js` defines `BUILD`, and `index.html` links every script and the stylesheet with a
-`?v=` of that token; the atlas and item fetches in `js/render.js` carry it too, because a PNG
-from one build and a JSON from another draws tiles out of the wrong rectangle.  This is not
+`?v=` of that token; item artwork fetches in `js/render.js` carry it too.  This is not
 decoration: the preview is a plain static server that sends no `Cache-Control`, so a browser
 tab is free to keep executing a script it fetched an hour ago without asking again — which is
 how a fixed move stays "still broken" while every test about it is green.  So bump `BUILD`
 and the queries in the same commit as any change under `game/js` or `game/assets`, and when a
 report says an old bug is still there, read the `[rift] build …` line the game prints on boot
-(or `UI.diag().build`) before believing it.  `tools/atlascheck.js` fails the build if the
-token in `core.js` and the ones in `index.html`/`render.js` drift apart.
+(or `UI.diag().build`) before believing it.
 
 ## Tests
 
 The engine runs headless in node — no browser, no canvas (also from the project root):
 
 ```bash
-node tools/animtest.js      # animation states, frame data, hitbox geometry  (29)
-node tools/simtest.js       # physics, collision, state machine, 4-player   (35)
-node tools/atlascheck.js    # atlases + the sprite renderer                   (15)
-node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline      (15)
+node tools/simtest.js       # physics, collision, state machine, 4-player
+node tools/cloudtest.js     # cloud save sync: merge, conflicts, offline
+node tools/character-art-test.js     # frame coverage, atlas rendering, item art
 ```
 
-All four boot the shipped files (`js/core.js … js/match.js`, plus `js/render.js` for the atlas
-suite and `js/cloud.js` for the sync suite) inside a stubbed DOM, so the code under test is the
-code that runs in the browser. `cloudtest.js` also stubs `fetch` with a server that speaks the
-same protocol as the Postgres function in `supabase/migrations/`, so both sides of the wire are
-covered without a project. Pass a substring to filter, `V=1` for stacks.
-
-`animtest`'s `flow:` test is the one that watches the half a structural check cannot see: it
-drives a real dash, roll and each injected attack at 60 Hz and counts how many of a row's
-cells the renderer actually *spends* while the move is live.  A four-cell row that a move only
-shows two frames of is two frames of art and two frames of nothing, and the atlas stays
-perfectly well-formed either way.
+The legacy atlas and animation-art suites were written for the previous sheets and
+geometry-derived strike frames; their assumptions do not all apply to these new sheets.
 
 ## Cloud saves (optional)
 
@@ -269,10 +155,11 @@ needs.
 ```
 game/
   index.html        shell + all screens
-  css/style.css     UI styling
+  css/style.css     base UI styling
+  css/ui-refresh.css graphic UI system and responsive overrides
   js/core.js        math, input, gamepad, procedural audio, save data
   js/data.js        fighters, movesets, stages, items, rules
-  js/render.js      sprite + vector renderer, stage backdrops
+  js/render.js      gameplay visuals, item artwork, stage backdrops
   js/fighter.js     physics, state machine, damage, ledge, final smash
   js/items.js       items, projectiles, mines, summons, FX
   js/ai.js          CPU opponents, levels 1–9
@@ -284,7 +171,9 @@ game/
   assets/items/     {key}.png + items.json — item sprites (generated, see tools/slice_items.py)
 
 tools/
-  slice_roster.py       roster sheets → atlas + animation meta
+  build_character_sheets.py  supplied sheets → individual frames + runtime atlases
+  build_ledge_sprites.py  approved ledge-pose concepts → keyed art + hand anchors
+  slice_roster.py       legacy roster-sheet slicer
   slice_rows.py         generated pose sheets → extra rows injected into an atlas
   slice_items.py        generated item sheet → game/assets/items + items.json
   atlas_desmerge.py     re-cut the merged attack rows the slicer could not split
@@ -302,3 +191,43 @@ supabase/
 ```
 
 `window.RR.step(n)` and `window.RR.makeAllCPU()` exist for automated testing.
+
+## Arena selection and HUD
+
+In VS mode, open **Stage** from character select to pick an arena. The three XL
+stages appear first; selecting a stage also turns off random selection. The HUD
+uses player-colored badges and actual damage percentages and stocks. In 1v1,
+the upper damage indicators and Smash Ball readiness also reflect match state;
+they are not health or a fictional charge meter. Timed matches show minutes and
+seconds; stock matches display their mode instead of a countdown.
+
+## Interface and audio
+
+The mode board, character and arena pickers, rules, records, pause, and results
+use a shared high-contrast, player-colored visual system. Selected options are
+marked explicitly, and interface motion respects reduced-motion preferences.
+Settings is available from the title and pause screens. Music and sound-effect
+preferences are saved separately; master mute (also toggled with M) applies to
+both for the current session. Leaving settings during a match returns to pause.
+
+The mode board previews each mode on hover or keyboard focus without starting
+it. Character player badges can be selected directly, and selection and match
+feedback is visual only—it does not alter gameplay. Reduced-motion preferences
+also apply to the interface effects.
+
+Entering menus zooms from the chosen control; returning reverses the transition
+and restores keyboard focus where possible. Screen changes remain immediate and
+zoom transitions are omitted when reduced motion is enabled.
+
+## Ledge recovery
+
+A free stage ledge can be grabbed from the outside while falling or during an
+up-special recovery. Hold down to avoid a grab; a fighter in hitstun cannot
+catch. Only one fighter may hang from each ledge. Press up or hold toward the
+stage to climb, jump to leap without spending a double jump, attack for a get-up
+attack, shield to roll, or down to drop. Dropping briefly prevents a regrab.
+Landing, respawning, or catching a ledge restores the up-special recovery.
+The hanging art uses the five approved AI-generated pose concepts in
+`assets-src/ledge-proposals/`; keyed runtime sprites and hand anchors live in
+`game/assets/ledge/`. The source concepts for Valor and Grim touch the image
+edge, so those cut-off pixels cannot be reconstructed by the keying process.
