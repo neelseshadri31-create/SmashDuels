@@ -89,7 +89,6 @@ const Modes = (() => {
     current = null;
     UI.showCustomResults({
       title: 'CLASSIC CLEARED', color: '#ffe04a',
-      img: 'assets/portraits/' + (window.__lastClassicKey || 'valor') + '_base.png',
       sub: 'YOU BEAT THE RUN',
       lines: ['RIFT COINS +300', 'CHALLENGE COMPLETE'],
     });
@@ -97,7 +96,7 @@ const Modes = (() => {
   function classicDefeat() {
     current = null;
     UI.showCustomResults({
-      title: 'RUN OVER', color: '#ff5a7a', img: 'assets/portraits/valor_base.png',
+      title: 'RUN OVER', color: '#ff5a7a',
       sub: 'TWO FALLS ENDS THE RUN',
       lines: ['Try a lower CPU level', 'Classic rewards patience'],
     });
@@ -159,7 +158,7 @@ const Modes = (() => {
             s.coins += 150; SAVE.save();
             m.state = 'over';
             UI.showCustomResults({
-              title: 'ALL TARGETS!', color: '#ffd23a', img: `assets/portraits/${current.fighterKey}_base.png`,
+              title: 'ALL TARGETS!', color: '#ffd23a',
               sub: 'TIME: ' + (timeUsed / 60).toFixed(2) + 's',
               lines: ['BEST: ' + (SAVE.data.records.targetsBest / 60).toFixed(2) + 's', 'RIFT COINS +150'],
             });
@@ -174,7 +173,7 @@ const Modes = (() => {
     const hits = match.targets ? match.targets.filter(t => t.dead).length : 0;
     current = null;
     UI.showCustomResults({
-      title: 'TIME UP', color: '#ff8a5a', img: 'assets/portraits/valor_base.png',
+      title: 'TIME UP', color: '#ff8a5a',
       sub: hits + ' / 10 TARGETS BROKEN',
       lines: ['Clear all targets to set a record'],
     });
@@ -227,7 +226,7 @@ const Modes = (() => {
     s.coins += Math.round(dist / 20); SAVE.save();
     current = null;
     UI.showCustomResults({
-      title: Math.round(dist) + ' m', color: '#ffd23a', img: `assets/portraits/${match.fighters[0].key}_base.png`,
+      title: Math.round(dist) + ' m', color: '#ffd23a',
       sub: 'SANDBAG DISTANCE',
       lines: ['BEST: ' + Math.round(s.records[key]) + ' m', 'RIFT COINS +' + Math.round(dist / 20)],
     });
@@ -276,7 +275,7 @@ const Modes = (() => {
     s.coins += kos * 30; SAVE.save();
     current = null;
     UI.showCustomResults({
-      title: kos + ' KOs', color: '#c77dff', img: `assets/portraits/${match.fighters[0].key}_base.png`,
+      title: kos + ' KOs', color: '#c77dff',
       sub: 'MULTI-MAN BRAWL',
       lines: ['RIFT COINS +' + kos * 30, 'Keep launching the mob'],
     });

@@ -1,0 +1,22 @@
+{
+  "valor": {
+    "handX": 102.71,
+    "handY": 3.45
+  },
+  "grim": {
+    "handX": 146.28,
+    "handY": 5.16
+  },
+  "astra": {
+    "handX": 119.34,
+    "handY": 6.59
+  },
+  "vesper": {
+    "handX": 138.99,
+    "handY": 6.41
+  },
+  "rook": {
+    "handX": 101.29,
+    "handY": 3.41
+  }
+}

@@ -248,7 +248,7 @@ class Item {
           this.y = py - 8; this.onGround = true; this.onPlatform = p; this.vy = 0;
         }
       }
-      if (this.y > WORLD.blast.bottom) { this.dead = true; }
+      if (this.y > match.blast.bottom) { this.dead = true; }
     } else {
       /* An item at rest has to keep checking what is under it.  It used to be
          told once that it had landed and never asked again, so a bob-omb that came
@@ -495,7 +495,7 @@ class Projectile {
       }
     }
     if (this.life-- <= 0) this.dead = true;
-    if (this.x < WORLD.blast.left - 200 || this.x > WORLD.blast.right + 200 || this.y < WORLD.blast.top - 100 || this.y > WORLD.blast.bottom + 100) this.dead = true;
+    if (this.x < match.blast.left - 200 || this.x > match.blast.right + 200 || this.y < match.blast.top - 100 || this.y > match.blast.bottom + 100) this.dead = true;
     // hit fighters
     for (const f of match.fighters) {
       if (f === this.owner || f.eliminated || this.hitIds.has(f.id)) continue;

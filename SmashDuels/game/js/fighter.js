@@ -5,9 +5,7 @@
 
 const FRAME = 1; // logic frame unit
 
-/* Grounded locomotion, in ticks.  A skid has to be long enough to read as weight
-   and short enough that a pivot is still a tool: 11 ticks is ~2 frames of
-   padding at 60 Hz, so a wavedash-length input still comes out of it. */
+/* Maximum turn animation window while momentum changes direction. */
 const SKID_FRAMES = 11;
 const DASH_KICK = 0.28;               // fraction of run speed added on a fresh tap
 /* Ledge grammar.  LEDGE_OUTSIDE is how far past the deck face a body has to be
@@ -63,6 +61,7 @@ class Fighter {
     this.jumpsLeft = this.def.stats.jumps;
     this.airJumpsLeft = this.def.stats.airJumps;
     this.fastfalled = false; this.usedUpB = false; this.usedAirDodge = false;
+    this.jumpHoldT = 0; this.jumpCut = false;
     this.dashT = 0; this.turnT = 0; this.runArmed = false; this.shieldDodging = false;
     this.hitstun = 0; this.hitlag = 0; this.shakeX = 0; this.shakeY = 0;
     this.invincT = 0; this.respawnT = 0; this.respawnDropT = 0; this.flashT = 0; this.hitT = 0;
@@ -136,10 +135,10 @@ class Fighter {
     const s = this.scale;
     let w = b.w * s, h = b.h * s;
     const st = this.state;
+    if (st === 'ledge') return { x: this.x - w / 2, y: this.y + 8, w, h };
     if (st === 'crouch') { h *= 0.66; }
     else if (st === 'roll' || st === 'spotdodge' || st === 'airdodge') { h *= 0.76; w *= 1.1; }
     else if (st === 'down' || st === 'getup') { h *= 0.36; w *= 1.45; }
-    else if (st === 'ledge') { h *= 0.5; w *= 0.9; }
     else if (st === 'attack' || st === 'special') {
       const ext = this.attackExtent();
       w = Math.max(w, w + ext.back + ext.fwd);
@@ -350,24 +349,10 @@ class Fighter {
   airborne() { return !this.onGround && this.state !== 'ledge'; }
 
   /* ---------------- movement ----------------
-     Reworked around three things the old version did to the feel:
-
-     1. Reversing snapped `facing` and kept the stride playing while momentum
-        carried the fighter the other way — the moonwalk, and the reason movement
-        read as "scuffed".  A reversal while moving faster than a walk now enters
-        a `turn` state: facing flips at once (so attacks aim right), the walk
-        cycle stops, and traction plus a reverse push scrubs the speed over
-        SKID_FRAMES.
-     2. `state` was decided from |vx| > walk * 1.12, so the last few pixels of a
-        slide to a stop still played a walk cycle.  Movement state now comes from
-        the input; the renderer advances the cycle by distance travelled, which
-        is what makes the deceleration read as weight instead of a glitch.
-     3. A fresh tap set `dashT` but only ever used it as a speed tier, so the
-        dash art never played and there was no burst.  Tapping now kicks the
-        velocity, plays the dash row, and ARMS the run: holding a direction keeps
-        the run speed, releasing or skidding disarms it and you walk.  (The old
-        `state === 'run'` check pinned you to run speed through a reversal, which
-        is how Grim sprinted backwards out of a pivot.)
+     A direct reversal keeps the run armed. The turn animation plays only while
+     velocity still points the old way, then the fighter runs in the new direction.
+     Holding a direction resumes running after airborne and locked states, even
+     when the original direction press is no longer fresh.
      ============================================================ */
   handleMovement(match) {
     const st = this.def.stats;
@@ -378,6 +363,14 @@ class Fighter {
     if (this.onGround) {
       if (this.turnT > 0) this.turnT--;
       if (this.dashT > 0) this.dashT--;
+
+      // A raised shield owns ground movement until it is released, jumped out
+      // of, or turned into a dodge by updateShield.
+      if (this.shieldHP > 0 && this.state === 'shield') {
+        this.vx = approach(this.vx, 0, st.traction * 1.8);
+        this.turnT = 0; this.endDash();
+        return;
+      }
 
       // crouch
       if (inp.down && this.state !== 'land' && !this.held) {
@@ -392,13 +385,16 @@ class Fighter {
       if (h !== 0) {
         const speed = Math.abs(this.vx);
         if (h !== this.facing) {
-          // turn-around: face it immediately, then scrub if we were moving
           this.facing = h;
-          if (speed > st.walk * 1.15) {
+          this.runArmed = true;
+          this.dashT = st.dashFrames;
+          if (this.vx * h < -0.2) {
             this.turnT = SKID_FRAMES;
-            this.endDash();
             match.fx.dust(this.x - h * 8 * this.scale, this.y, 6, this.pal.accent);
             AUDIO.sfx('land', { power: 0.18 });
+          } else {
+            this.turnT = 0;
+            this.vx += h * st.run * DASH_KICK;
           }
         } else if ((h > 0 ? this.dirIsTap('right') : this.dirIsTap('left')) && this.turnT <= 0 && this.dashT <= 0) {
           // a fresh tap: short burst off the mark, and the run is armed
@@ -407,15 +403,19 @@ class Fighter {
           this.vx += h * st.run * DASH_KICK;
         }
 
-        if (this.turnT > 0 && this.vx * this.facing < -0.2) {
-          // still sliding: drag, then a gentle nudge into the new direction
-          const early = this.turnT < 4 && speed < st.walk * 1.4;   // tap the other way to cut it short
-          this.vx = approach(this.vx, early ? h * st.walk * spd : 0, st.traction * (early ? 2.0 : 3.1));
+        // Landing or an action can outlast the tap window and clear runArmed.
+        // A held direction must still resume the run without another key press.
+        this.runArmed = true;
+        // Air steering can already have changed facing while momentum still
+        // points the other way; that is a turn too.
+        if (this.turnT <= 0 && this.vx * h < -0.2) this.turnT = SKID_FRAMES;
+        if (this.turnT > 0 && this.vx * h < -0.2) {
+          // Push toward the new run speed instead of braking to a walk first.
+          this.vx = approach(this.vx, h * st.run * spd, st.traction * 4.5);
           this.state = 'turn';
-          if (early) this.turnT = 0;
         } else {
           this.turnT = 0;
-          const running = this.runArmed && (this.dashT > 0 || speed > st.walk * 1.05);
+          const running = this.runArmed;
           const target = h * (running ? st.run : st.walk) * spd;
           this.vx = approach(this.vx, target, st.traction * (running ? 1.9 : 1.7));
           this.state = speed < 0.25 ? (this.shieldHP > 0 ? 'shield' : 'idle')
@@ -424,7 +424,7 @@ class Fighter {
       } else {
         this.turnT = 0;
         if (this.dashT <= 0) this.runArmed = false;
-        this.vx = approach(this.vx, 0, st.traction * 2.2);
+        this.vx = approach(this.vx, 0, st.traction * 1.4);
         if (this.state !== 'land') this.state = Math.abs(this.vx) < 0.25 ? (this.shieldHP > 0 ? 'shield' : 'idle') : 'walk';
       }
       // jumps (jump button only — up-tap jump removed so up+attack can be utilts)
@@ -432,8 +432,14 @@ class Fighter {
     } else {
       // air
       if (h !== 0) this.facing = h;
-      const target = h * st.air * spd * (this.fastfalled ? 1.05 : 1);
-      const accel = st.airAccel * (this.hitstun > 0 ? 0 : 1);
+      const airSpeed = st.air * spd * (this.fastfalled ? 1.05 : 1);
+      // Do not brake a running jump down to the lower air-speed cap while the
+      // player keeps holding the same direction. From rest, air speed is still
+      // limited by the fighter's normal air stat.
+      const carried = h !== 0 && this.vx * h > 0 ? Math.min(Math.abs(this.vx), st.run * spd) : 0;
+      const target = h * Math.max(airSpeed, carried);
+      const reversing = h !== 0 && this.vx * h < 0;
+      const accel = st.airAccel * (reversing ? 2.5 : 1);
       this.vx = approach(this.vx, target, accel);
       this.state = this.vy < -0.5 ? 'jump' : (this.fastfalled ? 'fastfall' : 'fall');
       if (this.def.stats.jumps > 2 && this.airJumpsLeft > 0 && this.vy < 0) this.state = this.vy < -1 ? 'jump' : 'fall';
@@ -444,8 +450,8 @@ class Fighter {
     }
   }
 
-  /* Releasing the stick, a skid, a jump or a landing all drop you out of the run. */
-  endDash() { this.runArmed = false; }
+  /* A jump, landing, crouch or hit can drop you out of the run. */
+  endDash() { this.runArmed = false; this.dashT = 0; }
 
   tryJump(match) {
     const st = this.def.stats;
@@ -469,6 +475,7 @@ class Fighter {
       this.vy = -st.djumpV * this.jumpMul();
       this.vx += this.horiz() * 1.2;
       this.fastfalled = false;
+      this.jumpHoldT = 0; this.jumpCut = true;
       this.state = 'doublejump'; this.animT = 0;
       AUDIO.sfx('djump');
       match.fx.ring(this.x, this.y - 20, this.pal.accent, 26);
@@ -482,9 +489,15 @@ class Fighter {
     const gScale = this.buffs.metal > 0 ? 1.9 : 1;
     let maxFall = (this.fastfalled ? st.fastfall : st.fall) * (this.buffs.bunny > 0 ? 0.85 : 1) * gScale;
     if (this.state === 'helpless') maxFall *= 1.15;
-    if (this.vy < 0 && this.jumpHoldT > 0 && this.jumpCut && !this.input.jump) { this.vx *= 0.99; this.vy *= 0.55; this.jumpHoldT = 0; }
+    // Releasing jump early produces a short hop by easing the ascent down,
+    // rather than instantly deleting nearly half of the upward velocity.
+    if (this.vy < 0 && this.jumpHoldT > 0 && this.jumpCut && !this.input.jump) {
+      this.jumpCut = false;
+      this.jumpHoldT = 0;
+    }
     if (this.jumpHoldT > 0) this.jumpHoldT--;
-    const grav = st.gravity * gScale * (this.vy > 0 ? 1.15 : 1);
+    let grav = st.gravity * gScale * (this.vy > 0 ? 1.05 : 1);
+    if (!this.jumpCut && this.vy < 0 && this.state === 'jump' && this.hitstun <= 0) grav *= 2.2;
     this.vy = Math.min(this.vy + grav, maxFall);
     if (this.hitstun <= 0 && this.state !== 'launch') this.vx *= 0.995;
 
@@ -605,6 +618,8 @@ class Fighter {
     // tech
     if (this.hitstun > 0 || this.techWindow > 0) {
       if (this.input.shield || this.input.shieldP) { this.startTech(match); return; }
+      // The landing consumes the tech window even when no tech was pressed.
+      this.techWindow = 0;
       // hard landing from hitstun → bounce
       this.hitstun = Math.floor(this.hitstun * 0.18);
       this.vy = -Math.abs(impact) * 0.24;
@@ -805,8 +820,10 @@ class Fighter {
 
   startSpecial(dir, match) {
     const sp = dir === 'n' ? this.def.specials.neutral : dir === 's' ? this.def.specials.side : dir === 'u' ? this.def.specials.up : this.def.specials.down;
-    if (!sp) return;
-    if (sp.cooldown && (this.cooldowns[dir] || 0) > 0) return;
+    if (!sp) return false;
+    // One recovery per airtime; landing, grabbing a ledge, and respawning reset it.
+    if (dir === 'u' && this.usedUpB && !this.onGround) return false;
+    if (sp.cooldown && (this.cooldowns[dir] || 0) > 0) return false;
     this.state = 'special';
     // keep the move's own kind (projectile / dash / recover / counter / mine …)
     // — overwriting `type` with 'special' made every special-type branch dead
@@ -814,8 +831,9 @@ class Fighter {
     this.actionT = 0; this.hitIds = new Map(); this.hitCount = new Map(); this.specPhase = 'startup';
     if (sp.cooldown) this.cooldowns[dir] = sp.cooldown;
     this.specialData = { fired: 0, timer: 0, projFired: false, orbFired: false, dashFired: false, tpFired: false, lassoFired: false, riseHit: false, mineFired: false };
-    if (dir === 'u') { this.usedUpB = true; }
+    if (dir === 'u') { this.usedUpB = true; this.fastfalled = false; }
     AUDIO.sfx('swing');
+    return true;
   }
 
   handleActions(match) {
@@ -848,8 +866,10 @@ class Fighter {
       this.consume('special');
       const h = this.horiz(), v = this.vert();
       let dir = 'n';
-      if (v < 0) dir = 'u'; else if (v > 0) dir = 'd'; else if (h !== 0) dir = 's';
-      this.startSpecial(dir, match);
+      // Up + special or jump + special both select the recovery. Explicit
+      // down takes precedence over jump; horizontal input can still steer up-B.
+      if (v < 0) dir = 'u'; else if (v > 0) dir = 'd'; else if (inp.jump) dir = 'u'; else if (h !== 0) dir = 's';
+      if (this.startSpecial(dir, match) && dir === 'u') this.consume('jump');
       return;
     }
     // taunt (down while idle on ground and not crouching handled in movement) — tap up on idle = taunt
@@ -877,6 +897,11 @@ class Fighter {
          slide clean across the stage. */
       if (a.slideFrom === undefined) a.slideFrom = this.x;
       if (Math.abs(this.x - a.slideFrom) >= a.slide) this.vx = approach(this.vx, 0, st.traction * 2.4);
+    } else if (this.onGround && a && a.type === 'landing') {
+      // Ground contact should not erase horizontal momentum: allow gentle
+      // steering through normal landing lag instead of two layers of braking.
+      const target = this.horiz() * st.run * this.speedMul();
+      this.vx = approach(this.vx, target, st.traction * 0.55);
     } else if (this.onGround) {
       this.vx = approach(this.vx, 0, st.traction * (a && a.type === 'special' ? 1.1 : 1.8));
     } else if (a && a.type === 'special') {
@@ -982,7 +1007,7 @@ class Fighter {
     if (a.type === 'airdodge') {
       this.vx *= 0.95; this.vy *= 0.95;
     }
-    if (a.type === 'landing') { this.vx *= 0.8; }
+    if (a.type === 'landing' && this.horiz() === 0) { this.vx *= 0.96; }
 
     if (ended || (a.cancelable && t > a.cancelable)) {
       this.shieldDodging = false;
@@ -1038,7 +1063,7 @@ class Fighter {
         }
         if (sp.type === 'teleport' && t >= sp.startup && !s.tpFired) { s.tpFired = true;
           const px = this.x;
-          const nx = clamp(this.x + this.facing * sp.dist, WORLD.blast.left + 40, WORLD.blast.right - 40);
+          const nx = clamp(this.x + this.facing * sp.dist, match.blast.left + 40, match.blast.right - 40);
           match.fx.burst(this.x, this.y - 50, this.pal.accent, 18);
           this.x = nx;
           this.invincT = Math.max(this.invincT, 8);
@@ -1064,6 +1089,16 @@ class Fighter {
             this.vy = -sp.rise * (1 - (t - sp.startup) / 26);
             this.vx = lerp(this.vx, this.horiz() * sp.drift + this.facing * sp.drift * 0.4, 0.25);
             this.hitstun = 0;
+            if (t === sp.startup) {
+              match.fx.ring(this.x, this.y - 30, this.pal.accent, this.key === 'grim' ? 75 : 48, 15);
+              if (this.key === 'valor' || this.key === 'vesper') match.fx.arc(this.x, this.y - 60, -Math.PI / 2, this.pal.accent, 55, 13, this.facing);
+              if (this.key === 'grim') match.fx.burst(this.x, this.y, this.pal.accent, 18, 5);
+            }
+            if ((t - sp.startup) % 4 === 0) {
+              match.fx.particle({ x: this.x + rand(-10, 10), y: this.y - 10, vx: rand(-1, 1), vy: rand(1, 3), life: 15, size: this.key === 'grim' ? 6 : 3, color: this.pal.accent, grav: 0, shape: this.key === 'grim' ? 'shard' : 'spark' });
+              // A short energy line reads as Rook's drone assist, not a stage tether.
+              if (this.key === 'rook') match.fx.lines.push({ x1: this.x, y1: this.y - 55, x2: this.x + this.facing * 18, y2: this.y - 135, color: this.pal.accent, w: 3, life: 5, t: 0 });
+            }
           }
           if (t >= sp.startup + 2 && !s.riseHit) { s.riseHit = true;
             match.aoeHit(this, this.x, this.y - 70, 62, sp.damage, sp.bkb, sp.kbs, sp.angle);
@@ -1074,10 +1109,14 @@ class Fighter {
         if (sp.type === 'teleport' && t >= sp.startup && !s.tpFired) { s.tpFired = true;
           const up = sp.dist || 200;
           match.fx.burst(this.x, this.y - 50, this.pal.accent, 20);
-          this.y = Math.max(WORLD.blast.top + 80, this.y - up);
+          this.y = Math.max(match.blast.top + 80, this.y - up);
           this.vy = -2; this.vx = this.horiz() * 4;
           this.invincT = Math.max(this.invincT, 10);
           match.fx.burst(this.x, this.y - 50, this.pal.accent, 20);
+          match.fx.ring(this.x, this.y - 50, this.pal.accent, 58, 16);
+          // The blink's authored hit lands at the arrival point once, using the
+          // same team, invincibility, and shield checks as other area attacks.
+          match.aoeHit(this, this.x, this.y - 50, 55, sp.damage, sp.bkb, sp.kbs, sp.angle);
           AUDIO.sfx('dodge');
         }
         break;
@@ -1247,65 +1286,84 @@ class Fighter {
      over solid floor, never off-stage — was snapped into a ledge-hang nobody asks
      for.  In 4-player that was the whole "my character gets stuck on the sides". */
   tryLedgeGrab(match) {
-    if (this.ledgeCD > 0 || this.state === 'ledge' || this.usedUpB && this.ledgeGrabsThisAir === 1) return;
+    if (this.ledgeCD > 0 || this.state === 'ledge' || this.onGround || this.hitstun > 0 ||
+        this.grabbedBy || this.eliminated || this.input.down || match.stage.ledges === false) return false;
+    // A rising recovery can catch the lip from below, while a normal rising
+    // jump stays free of accidental snaps on its way up.
+    const risingRecovery = this.state === 'special' && this.action && this.action.specialKey === 'u';
+    if (this.vy < -1 && !risingRecovery) return false;
     const gd = match.stage.ground;
-    if (this.vy < -1) return;
-    const edges = [{ side: -1, x: gd.x }, { side: 1, x: gd.x + gd.w }];
-    for (const e of edges) {
-      if (Math.abs(this.y - gd.y) > 40 || this.y <= gd.y - 70) continue;
-      // how far past the face we actually are: negative means we are over the deck
+    for (const e of [{ side: -1, x: gd.x }, { side: 1, x: gd.x + gd.w }]) {
+      // Feet can be a body length below the lip, but never over solid deck.
+      if (this.y < gd.y - 30 || this.y > gd.y + 90 * this.scale) continue;
       const beyond = e.side < 0 ? gd.x - this.x : this.x - (gd.x + gd.w);
-      if (beyond < LEDGE_OUTSIDE || beyond > 30 + LEDGE_OUTSIDE) continue;
+      if (beyond < LEDGE_OUTSIDE || beyond > 48 * this.scale + LEDGE_OUTSIDE) continue;
+      // One fighter owns each ledge; a second can't stack invisibly on top.
+      if (match.fighters.some(f => f !== this && !f.eliminated && f.state === 'ledge' && f.ledge && f.ledge.side === e.side)) continue;
       this.snapLedge(match, e.side, e.x);
       return true;
     }
     return false;
   }
   snapLedge(match, side, edgeX) {
-    this.state = 'ledge'; this.ledge = { side, x: edgeX };
-    this.x = edgeX + side * 14; this.y = match.stage.ground.y - 8;
-    this.vx = this.vy = 0; this.facing = -side;
-    this.ledgeInvuln = 30; this.actionT = 0;
+    this.state = 'ledge'; this.stateT = 0; this.animT = 0; this.ledge = { side, x: edgeX };
+    this.x = edgeX + side * 30 * this.scale; this.y = match.stage.ground.y - 8;
+    this.vx = this.vy = 0; this.facing = -side; this.onGround = false; this.onPlatform = null;
+    this.action = null; this.actionT = 0; this.counterActive = false; this.charging = false;
+    this.ledgeInvuln = 30;
     this.jumpsLeft = this.def.stats.jumps; this.airJumpsLeft = this.def.stats.airJumps;
     this.fastfalled = false; this.usedUpB = false; this.usedAirDodge = false;
+    // Don't fire a previously buffered action the moment the hang ends.
+    for (const key of Object.keys(this.inputBuffer)) this.inputBuffer[key] = 0;
+    match.fx.ring(edgeX, match.stage.ground.y, this.pal.accent, 24, 10);
     AUDIO.sfx('ledge');
   }
   updateLedge(match) {
     const inp = this.input;
-    this.ledgeInvuln = Math.max(this.ledgeInvuln, 0);
-    if (this.ledgeInvuln > 0) this.ledgeInvuln--;
-    if (inp.upP || inp.jumpP || (inp.up && this.stateT > 6)) { this.ledgeGetup(match, 'climb'); return; }
+    if (!this.ledge) { this.state = 'fall'; return; }
+    if (inp.jumpP) { this.ledgeGetup(match, 'jump'); return; }
     if (inp.attackP) { this.ledgeGetup(match, 'attack'); return; }
     if (inp.shieldP) { this.ledgeGetup(match, 'roll'); return; }
     if (inp.downP) {
-      this.state = 'fall'; this.vx = this.facing * 2; this.vy = 2; this.ledge = null; this.ledgeCD = 30; return;
+      const side = this.ledge.side;
+      this.state = 'fall'; this.stateT = 0; this.vx = side * 2; this.vy = 2;
+      this.ledge = null; this.ledgeInvuln = 0; this.ledgeCD = 30; return;
     }
-    /* Nobody hangs forever.  The only exits used to be a button press, so a CPU
-       busy with something else — or a player mashing nothing — sat in an
-       invulnerable ledge-hang for five seconds.  Climb rather than drop: dropping
-       puts you back off-stage, straight into the pile that shoved you there. */
+    // Holding toward the stage or up after a short grip also climbs; this
+    // lets a player continuing their recovery input get back into the fight.
+    if (inp.upP || (this.stateT > 6 && (inp.up || this.horiz() === -this.ledge.side))) {
+      this.ledgeGetup(match, 'climb'); return;
+    }
     if (this.stateT > LEDGE_AUTO_CLIMB) {
       this.ledgeGetup(match, 'climb');
-      this.ledgeCD = 12;          // half the usual lockout: this get-up was the engine's, not the player's
-      return;
+      this.ledgeCD = 12;
     }
   }
   ledgeGetup(match, kind) {
+    if (!this.ledge) return;
     const gd = match.stage.ground;
     const side = this.ledge.side;
-    this.ledge = null; this.ledgeCD = 24;
-    this.x = side < 0 ? gd.x + 30 : gd.x + gd.w - 30;
-    this.y = gd.y - 2; this.onGround = true; this.vy = 0;
-    if (kind === 'attack') {
-      this.startAttack('jab', match);
-      match.aoeHit(this, this.x, this.y - 50, 60, 7, 16, 40, 40);
-    } else if (kind === 'roll') {
-      this.invincT = 20; this.x += side * -40;
-      this.state = 'roll'; this.action = { type: 'roll', dur: 20 }; this.actionT = 0; this.rollDir = -side; this.facing = -side;
-      AUDIO.sfx('dodge');
-    } else if (kind === 'climb') {
-      this.invincT = 10;
-      this.state = 'idle';
+    this.ledge = null; this.ledgeCD = 24; this.ledgeInvuln = 0;
+    this.facing = -side; this.stateT = 0; this.action = null; this.actionT = 0;
+    if (kind === 'jump') {
+      this.x = (side < 0 ? gd.x : gd.x + gd.w) + side * 20;
+      this.y = gd.y - 4; this.onGround = false;
+      this.vx = -side * this.def.stats.air * .7;
+      this.vy = -this.def.stats.jumpV * this.jumpMul();
+      this.jumpHoldT = 8; this.jumpCut = true; this.state = 'jump'; this.animT = 0;
+      this.consume('jump'); AUDIO.sfx('jump');
+    } else {
+      this.x = side < 0 ? gd.x + 30 : gd.x + gd.w - 30;
+      this.y = gd.y; this.onGround = true; this.vx = this.vy = 0;
+      if (kind === 'attack') {
+        this.consume('attack'); this.startAttack('jab', match);
+      } else if (kind === 'roll') {
+        this.consume('shield'); this.invincT = 20; this.x += side * -40;
+        this.state = 'roll'; this.action = { type: 'roll', dur: 20 }; this.actionT = 0; this.rollDir = -side;
+        AUDIO.sfx('dodge');
+      } else {
+        this.invincT = 10; this.state = 'idle';
+      }
     }
     match.fx.dust(this.x, this.y, 8, '#ffffff');
   }
@@ -1358,7 +1416,7 @@ class Fighter {
   }
 
   checkBlastNow(match) {
-    const b = WORLD.blast;
+    const b = match.blast;
     if (this.x < b.left || this.x > b.right || this.y < b.top || this.y > b.bottom) {
       match.koFighter(this, this.lastHitBy);
       return true;
@@ -1368,13 +1426,13 @@ class Fighter {
 
   /* ---------------- KO ---------------- */
   checkBlast(match) {
-    const b = WORLD.blast;
+    const b = match.blast;
     if (this.x < b.left || this.x > b.right || this.y < b.top || this.y > b.bottom) {
       match.koFighter(this, this.lastHitBy);
       return true;
     }
     // ledge grab attempt
-    if (!this.onGround && this.state !== 'ledge' && this.vy > -1 && this.ledgeCD === 0) this.tryLedgeGrab(match);
+    if (!this.onGround && this.state !== 'ledge' && this.ledgeCD === 0) this.tryLedgeGrab(match);
     return false;
   }
 

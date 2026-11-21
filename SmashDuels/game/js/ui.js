@@ -23,16 +23,88 @@ const UI = (() => {
   let lastScreen = null;
   let vsCPULevel = 5;
   let modeTarget = 'vs';
+  let settingsReturn = 'screen-title';
+  let lastHeroKey = null;
+  const PLAYER_COLORS = ['#ef3c43', '#2688e9', '#edb72c', '#35a669'];
   let toastEl = null;
 
   function el(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild; }
 
+  // Remember where a submenu was entered so reversing it zooms back toward
+  // the same control. Screen state changes synchronously: animation never
+  // delays a click, a match start, or a rapid second navigation.
+  let navigation = [{ id: 'screen-title', trigger: null, origin: null }];
+  let navigationTrigger = null;
+  let transitionTimer = 0;
+  const TRANSITION_CLASSES = ['screen-enter-forward', 'screen-enter-back', 'screen-exit-forward', 'screen-exit-back'];
+
   function show(id) {
-    $$('.screen').forEach(s => s.classList.remove('active'));
-    const s = document.getElementById(id);
-    if (s) s.classList.add('active');
+    const next = document.getElementById(id);
+    if (!next) return;
+    const previous = document.getElementById(current);
+    const changed = current !== id;
+    let backwards = false;
+    let origin = { x: 50, y: 50 };
+    let restore = null;
+    if (changed) {
+      const button = navigationTrigger || (previous && previous.contains(document.activeElement) ? document.activeElement : null);
+      const rect = button && button.getBoundingClientRect ? button.getBoundingClientRect() : null;
+      if (rect && rect.width && rect.height) origin = { x: (rect.left + rect.width / 2) / innerWidth * 100, y: (rect.top + rect.height / 2) / innerHeight * 100 };
+      const targetIndex = navigation.map(entry => entry.id).lastIndexOf(id);
+      if (targetIndex !== -1 && targetIndex < navigation.length - 1) {
+        backwards = true;
+        navigation = navigation.slice(0, targetIndex + 1);
+        const entry = navigation[targetIndex];
+        origin = entry.origin || origin;
+        restore = entry.trigger;
+      } else {
+        navigation[navigation.length - 1].trigger = button;
+        navigation[navigation.length - 1].origin = origin;
+        navigation.push({ id, trigger: null, origin: null });
+      }
+    }
+    navigationTrigger = null;
+    clearTimeout(transitionTimer);
+    $$('.screen').forEach(screen => {
+      screen.classList.remove('active', ...TRANSITION_CLASSES);
+      screen.inert = false;
+    });
+    next.classList.add('active');
     current = id;
-    if (id !== 'screen-match' && id !== 'screen-results') AUDIO.stopMusic();
+
+    // Do not zoom a live fight or the result of a match. A settings screen
+    // opened from pause is the exception: it can zoom over the paused scene.
+    const pauseSettings = (id === 'screen-settings' && previous && previous.id === 'screen-match') ||
+      (id === 'screen-match' && previous && previous.id === 'screen-settings');
+    const matchBoundary = (id === 'screen-match' || current === 'screen-results' ||
+      (previous && (previous.id === 'screen-match' || previous.id === 'screen-results'))) && !pauseSettings;
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (changed && !matchBoundary && !reduced) {
+      const x = Math.max(0, Math.min(100, origin.x)) + '%';
+      const y = Math.max(0, Math.min(100, origin.y)) + '%';
+      for (const screen of [previous, next]) if (screen) {
+        screen.style.setProperty('--zoom-x', x); screen.style.setProperty('--zoom-y', y);
+      }
+      if (previous && previous.id !== 'screen-match') {
+        previous.inert = true;
+        previous.classList.add(backwards ? 'screen-exit-back' : 'screen-exit-forward');
+      }
+      if (id !== 'screen-match') next.classList.add(backwards ? 'screen-enter-back' : 'screen-enter-forward');
+      transitionTimer = setTimeout(() => {
+        if (previous) { previous.classList.remove(...TRANSITION_CLASSES); previous.inert = false; }
+        next.classList.remove(...TRANSITION_CLASSES);
+      }, 480);
+    }
+    if (changed) {
+      if (restore && restore.isConnected && (next.contains(restore) || (id === 'screen-match' && $('#hud').contains(restore)))) {
+        restore.focus({ preventScroll: true });
+      } else if (id !== 'screen-match') {
+        next.setAttribute('tabindex', '-1');
+        next.focus({ preventScroll: true });
+      }
+    }
+    if (id === 'screen-settings' && settingsReturn === 'screen-match') AUDIO.stopMusic();
+    else if (id !== 'screen-match') AUDIO.startMusic();
   }
 
   function toast(msg) {
@@ -53,14 +125,60 @@ const UI = (() => {
     AUDIO.startMusic();
   }
 
+  // Previewing a mode never selects it: hover and keyboard focus use the same
+  // presentation, while activation still follows the original menu flow.
+  const MODE_PREVIEWS = {
+    vs:      { index: '01 / BATTLE', title: 'VS MODE', copy: 'A CUSTOM BATTLE FOR UP TO FOUR FIGHTERS', front: 'valor', back: 'vesper', lead: 'YOUR RULES.', end: 'YOUR RIFT.' },
+    classic: { index: '02 / CLASSIC', title: 'CLASSIC', copy: 'TAKE ON A FIVE-STAGE GAUNTLET', front: 'valor', back: 'grim', lead: 'FIVE STAGES.', end: 'ONE CHAMPION.' },
+    targets: { index: '03 / TARGETS', title: 'TARGETS', copy: 'BREAK ALL TEN TARGETS AGAINST THE CLOCK', front: 'astra', back: 'vesper', lead: 'TEN TARGETS.', end: 'GO FOR SPEED.' },
+    homered: { index: '04 / HOME-RUN', title: 'HOME-RUN', copy: 'POWER UP AND SEND THE BAG FLYING', front: 'rook', back: 'grim', lead: 'WIND IT UP.', end: 'SEND IT FLYING.' },
+    multiman: { index: '05 / MULTI-MAN', title: 'MULTI-MAN', copy: 'TAKE ON A CROWD OF TEN FIGHTERS', front: 'grim', back: 'rook', lead: 'ONE FIGHTER.', end: 'TEN FOES.' },
+  };
+  function setupModePreviews() {
+    const screen = $('#screen-title');
+    const board = screen.querySelector('.main-menu');
+    let preview = '';
+    function setPreview(mode) {
+      if (!MODE_PREVIEWS[mode] || preview === mode) return;
+      preview = mode;
+      const data = MODE_PREVIEWS[mode];
+      screen.dataset.preview = mode;
+      $('.mode-preview-index').textContent = data.index;
+      $('.mode-preview-copy').textContent = data.copy;
+      $('.home-art-label').innerHTML = data.title + ' <span> / MODE PREVIEW</span>';
+      $('.home-art-caption').innerHTML = data.lead + '<br><strong>' + data.end + '</strong>';
+      $('.home-fighter-front').src = `assets/portraits/${data.front}_base.png?v=${BUILD}`;
+      $('.home-fighter-back').src = `assets/portraits/${data.back}_base.png?v=${BUILD}`;
+      const art = $('.home-art');
+      art.classList.remove('preview-change'); void art.offsetWidth; art.classList.add('preview-change');
+    }
+    function modeOf(button) { return button.id === 'btn-vs' ? 'vs' : button.dataset.mode; }
+    board.addEventListener('pointerover', e => {
+      const button = e.target.closest('button');
+      if (button && board.contains(button) && e.pointerType !== 'touch') setPreview(modeOf(button));
+    });
+    board.addEventListener('focusin', e => {
+      const button = e.target.closest('button');
+      if (button && board.contains(button)) setPreview(modeOf(button));
+    });
+    board.addEventListener('pointerleave', () => {
+      const focused = board.querySelector('button:focus-visible');
+      setPreview(focused ? modeOf(focused) : 'vs');
+    });
+    board.addEventListener('focusout', e => {
+      if (!board.contains(e.relatedTarget) && !board.matches(':hover')) setPreview('vs');
+    });
+    setPreview('vs');
+  }
+
   /* ---------------- character select ---------------- */
   function fighterCard(key, i) {
     const d = FIGHTERS[key];
     const locked = !SAVE.data.unlocked.includes(key);
-    return `<div class="fcell ${locked ? 'locked' : ''}" data-key="${key}" data-i="${i}" style="--c:${d.color}">
-      <img src="assets/portraits/${key}_base.png" alt="${d.name}">
-      <div class="fmeta"><b>${d.name}</b><small>${d.title}</small></div>
-    </div>`;
+    return `<button type="button" class="fcell ${locked ? 'locked' : ''}" data-key="${key}" data-i="${i}" style="--c:${d.color}" aria-label="${d.name}${locked ? ', locked' : ''}">
+      <img src="assets/portraits/${key}_base.png?v=${BUILD}" alt="">
+      <span class="fmeta"><b>${d.name}</b><small>${d.title}</small></span>
+    </button>`;
   }
 
   function buildSelect() {
@@ -70,6 +188,7 @@ const UI = (() => {
       const key = c.dataset.key;
       if (!SAVE.data.unlocked.includes(key)) { AUDIO.sfx('back'); toast('LOCKED — WIN MATCHES TO UNLOCK'); return; }
       AUDIO.sfx('menu'); fighters[selSlot] = key; pals[selSlot] = 0; renderSelect();
+      c.classList.remove('select-punch'); void c.offsetWidth; c.classList.add('select-punch');
     }));
     $('#slot-tabs').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
       selSlot = +b.dataset.slot; AUDIO.sfx('menu'); renderSelect();
@@ -77,6 +196,12 @@ const UI = (() => {
     $('#pal-row').addEventListener('click', e => {
       const sw = e.target.closest('.swatch'); if (!sw) return;
       pals[selSlot] = +sw.dataset.p; AUDIO.sfx('menu'); renderSelect();
+    });
+    $('#sel-summary').addEventListener('click', e => {
+      const slot = e.target.closest('button[data-slot]'); if (!slot) return;
+      selSlot = +slot.dataset.slot; AUDIO.sfx('menu'); renderSelect();
+      const selected = $('#sel-summary').querySelector(`[data-slot="${selSlot}"]`);
+      if (selected) selected.focus({ preventScroll: true });
     });
     $('#cpu-toggle').addEventListener('click', () => {
       isCPU[selSlot] = !isCPU[selSlot]; AUDIO.sfx('menu'); renderSelect();
@@ -95,47 +220,65 @@ const UI = (() => {
 
   function renderSelect() {
     const tabs = [];
-    for (let i = 0; i < activeSlots; i++) tabs.push(`<button data-slot="${i}" class="${i === selSlot ? 'on' : ''}" style="--c:${FIGHTERS[fighters[i]].color}">P${i + 1}${isCPU[i] ? ' · CPU' : ''}</button>`);
+    for (let i = 0; i < activeSlots; i++) tabs.push(`<button data-slot="${i}" class="${i === selSlot ? 'on' : ''}" style="--c:${PLAYER_COLORS[i]}" aria-pressed="${i === selSlot}">P${i + 1}${isCPU[i] ? ' · CPU' : ''}</button>`);
     $('#slot-tabs').innerHTML = tabs.join('');
-    $('#slot-tabs').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { selSlot = +b.dataset.slot; AUDIO.sfx('menu'); renderSelect(); }));
+    $('#slot-tabs').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { selSlot = +b.dataset.slot; AUDIO.sfx('menu'); renderSelect(); const tab = $('#slot-tabs').querySelector(`[data-slot="${selSlot}"]`); if (tab) tab.focus({ preventScroll: true }); }));
 
-    $$('#fighter-grid .fcell').forEach(c => c.classList.toggle('sel', c.dataset.key === fighters[selSlot]));
+    $$('#fighter-grid .fcell').forEach(c => { const selected = c.dataset.key === fighters[selSlot]; c.classList.toggle('sel', selected); c.setAttribute('aria-pressed', selected); });
     const d = FIGHTERS[fighters[selSlot]];
-    const pal = d.palettes[pals[selSlot] % d.palettes.length];
+    $('#hero-player').textContent = `P${selSlot + 1} / ${isCPU[selSlot] ? 'CPU' : 'PLAYER'} SELECT`;
+    $('#hero-player').style.setProperty('--player', PLAYER_COLORS[selSlot]);
     $('#hero-name').textContent = d.name;
     $('#hero-title').textContent = d.title;
     $('#hero-arch').textContent = d.archetype;
-    $('#hero-portrait').src = `assets/portraits/${fighters[selSlot]}_base.png`;
-    $('#hero-portrait').style.setProperty('--c', d.color);
+    $('#hero-description').textContent = d.description;
+    $('#hero-portrait').src = `assets/portraits/${fighters[selSlot]}_base.png?v=${BUILD}`;
+    if (lastHeroKey !== fighters[selSlot]) {
+      const hero = $('.hero-top');
+      hero.classList.remove('hero-swap'); void hero.offsetWidth; hero.classList.add('hero-swap');
+      lastHeroKey = fighters[selSlot];
+    }
+    $('#hero-portrait').alt = d.name;
+    $('.hero-top').style.setProperty('--c', d.color);
     $('#hero-moves').innerHTML = Object.values(d.moves).slice(0, 6).map(m => `<span>${m.name}</span>`).join('') +
-      Object.values(d.specials).map(s => `<span class="sp">${s.name}</span>`).join('');
+      Object.entries(d.specials).map(([dir, s]) => `<span class="sp" title="${s.desc}">${({ neutral: 'NEUTRAL', side: 'SIDE', up: 'UP', down: 'DOWN' })[dir]} · ${s.name}</span>`).join('');
     $('#pal-row').innerHTML = d.palettes.map((p, i) =>
-      `<div class="swatch ${i === pals[selSlot] ? 'on' : ''}" data-p="${i}" title="${p.name}" style="background:linear-gradient(135deg,${p.primary},${p.accent})"></div>`).join('');
-    $('#cpu-toggle').textContent = isCPU[selSlot] ? 'CPU: ON' : 'HUMAN';
+      `<button type="button" class="swatch ${i === pals[selSlot] ? 'on' : ''}" data-p="${i}" aria-label="${p.name} palette" aria-pressed="${i === pals[selSlot]}" title="${p.name}" style="background:linear-gradient(135deg,${p.primary},${p.accent})"></button>`).join('');
+    $('#cpu-toggle').textContent = isCPU[selSlot] ? 'CONTROL: CPU' : 'CONTROL: HUMAN';
+    $('#cpu-toggle').setAttribute('aria-pressed', isCPU[selSlot]);
     $('#cpu-toggle').classList.toggle('on', isCPU[selSlot]);
     $('#cpu-level').value = rules.aiLevel;
     $('#cpu-level-val').textContent = rules.aiLevel;
     $('#cpu-level-wrap').style.opacity = isCPU.some((v, i) => v && i < activeSlots) ? 1 : 0.35;
     $('#sel-summary').innerHTML = Array.from({ length: activeSlots }, (_, i) =>
-      `<div class="sum" style="--c:${FIGHTERS[fighters[i]].color}"><img src="assets/portraits/${fighters[i]}_base.png"><span>${isCPU[i] ? 'CPU' : 'P' + (i + 1)}</span></div>`).join('');
+      `<button type="button" class="sum ${i === selSlot ? 'active' : ''}" data-slot="${i}" aria-pressed="${i === selSlot}" aria-label="Edit player ${i + 1}, ${FIGHTERS[fighters[i]].name}${isCPU[i] ? ', CPU' : ''}" style="--c:${PLAYER_COLORS[i]}"><img src="assets/portraits/${fighters[i]}_base.png?v=${BUILD}" alt=""><span>P${i + 1}${isCPU[i] ? ' · CPU' : ''}</span><b>${FIGHTERS[fighters[i]].name}</b></button>`).join('');
     $('#rule-summary').textContent = `${rules.mode.toUpperCase()} · ${rules.stocks} STOCK${rules.stocks > 1 ? 'S' : ''}${rules.mode !== 'stock' ? ' · ' + Math.floor(rules.time / 60) + ' MIN' : ''} · ${STAGES[rules.stage].name} · ITEMS ${rules.items.toUpperCase()}`;
   }
 
   /* ---------------- stages ---------------- */
   function buildStages() {
-    $('#stage-grid').innerHTML = STAGE_KEYS.map((k, i) => {
+    const grid = $('#stage-grid');
+    const scrollTop = grid.scrollTop;
+    grid.innerHTML = STAGE_KEYS.map((k) => {
       const s = STAGES[k];
-      return `<div class="scell ${k === rules.stage ? 'sel' : ''}" data-k="${k}" style="--c:${s.accent}">
+      const selected = k === rules.stage && !rules.stageRandom;
+      return `<button type="button" class="scell ${selected ? 'sel' : ''}" data-k="${k}" style="--c:${s.accent}" aria-pressed="${selected}">
         <canvas class="sthumb" data-stage="${k}" width="260" height="130"></canvas>
+        <span class="stage-card-meta"><span>${s.size === 'XL' ? 'XL ARENA' : 'STANDARD'}</span><span>${selected ? 'SELECTED ✓' : 'SELECT →'}</span></span>
         <b>${s.name}</b><small>${s.sub}</small>
-      </div>`;
+      </button>`;
     }).join('');
     $$('#stage-grid .scell').forEach(c => c.addEventListener('click', () => {
-      rules.stage = c.dataset.k; AUDIO.sfx('menu'); buildStages();
+      const key = c.dataset.k; rules.stage = key; rules.stageRandom = false; AUDIO.sfx('menu'); buildStages();
+      const selected = document.querySelector(`#stage-grid .scell[data-k="${key}"]`);
+      if (selected) { selected.classList.add('select-punch'); selected.focus({ preventScroll: true }); }
     }));
+    grid.scrollTop = scrollTop;
     drawStageThumbs();
     const rnd = $('#stage-random');
     rnd.classList.toggle('on', rules.stageRandom);
+    rnd.setAttribute('aria-pressed', !!rules.stageRandom);
+    rnd.textContent = rules.stageRandom ? 'RANDOM: ON' : 'RANDOM: OFF';
     rnd.onclick = () => { rules.stageRandom = !rules.stageRandom; AUDIO.sfx('menu'); buildStages(); };
     $('#stage-back').onclick = () => { AUDIO.sfx('back'); if (lastScreen === 'screen-select') { renderSelect(); show('screen-select'); } else { openTitle(); } };
     $('#stage-go').onclick = () => { AUDIO.sfx('confirm'); startFromSelect(); };
@@ -151,7 +294,7 @@ const UI = (() => {
       ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
       // ground
       const gd = s.ground;
-      const sx = W / 1500;
+      const sx = W / Math.max(1500, gd.w + 250);
       const ox = W / 2;
       ctx.fillStyle = shade(s.bg[2], 0.2);
       ctx.fillRect(ox + gd.x * sx, H * 0.72, gd.w * sx, 12);
@@ -176,7 +319,9 @@ const UI = (() => {
   /* ---------------- rules ---------------- */
   function buildRules() {
     const r = rules;
-    $('#rules-body').innerHTML = `
+    const rulesBody = $('#rules-body');
+    const scrollTop = rulesBody.scrollTop;
+    rulesBody.innerHTML = `
       <div class="rrow"><label>MODE</label><div class="seg" data-k="mode">
         ${['stock', 'time', 'stamina'].map(v => `<button data-v="${v}" class="${r.mode === v ? 'on' : ''}">${v.toUpperCase()}</button>`).join('')}
       </div></div>
@@ -204,7 +349,8 @@ const UI = (() => {
       <div class="rrow"><label>DAMAGE RATIO</label><div class="seg" data-k="damageRatio">
         ${[0.5, 0.75, 1, 1.25, 1.5, 2].map(v => `<button data-v="${v}" class="${r.damageRatio === v ? 'on' : ''}">${v}x</button>`).join('')}
       </div></div>`;
-    $$('#rules-body .seg button').forEach(b => b.addEventListener('click', () => {
+    rulesBody.scrollTop = scrollTop;
+    $$('#rules-body .seg button').forEach(b => { b.setAttribute('aria-pressed', b.classList.contains('on')); b.addEventListener('click', () => {
       const k = b.parentElement.dataset.k, v = b.dataset.v;
       rules[k] = ['mode', 'items'].includes(k) ? v : (isNaN(+v) ? v : +v);
       if (k === 'teams') rules.teams = v === '1';
@@ -213,7 +359,9 @@ const UI = (() => {
       if (k === 'damageRatio') rules.damageRatio = +v;
       if (k === 'items') rules.items = v;
       AUDIO.sfx('menu'); buildRules();
-    }));
+      const selected = document.querySelector(`#rules-body .seg[data-k="${k}"] button[data-v="${v}"]`);
+      if (selected) selected.focus({ preventScroll: true });
+    }); });
     $('#rules-back').onclick = () => { AUDIO.sfx('back'); renderSelect(); show('screen-select'); };
     $('#rules-go').onclick = () => { AUDIO.sfx('confirm'); startFromSelect(); };
   }
@@ -244,12 +392,11 @@ const UI = (() => {
       return a.damage - b.damage;
     });
     const win = ranks[0];
-    $('#res-winner').innerHTML = `<img src="assets/portraits/${win.key}_base.png" class="win-img" style="--c:${win.pal.accent}">
-      <div><h2 style="color:${win.pal.accent}">${win.def.name}</h2><p>${win.isCPU ? 'CPU' : 'PLAYER ' + (win.playerIndex + 1)} WINS</p></div>`;
+    $('#res-winner').innerHTML = `<img class="win-img" src="assets/portraits/${win.key}_base.png?v=${BUILD}" alt=""><div><h2 style="color:${win.pal.accent}">${win.def.name}</h2><p>${win.isCPU ? 'CPU' : 'PLAYER ' + (win.playerIndex + 1)} WINS</p></div>`;
     $('#res-table').innerHTML = `<div class="rt head"><span>#</span><span>FIGHTER</span><span>STOCKS</span><span>KO</span><span>FALLS</span><span>DEALT</span><span>TAKEN</span></div>` +
       ranks.map((f, i) => `<div class="rt ${i === 0 ? 'first' : ''}" style="--c:${f.pal.accent}">
         <span>${i + 1}</span>
-        <span class="fname"><img src="assets/portraits/${f.key}_base.png">${f.def.name}${f.isCPU ? ' <em>CPU</em>' : ''}</span>
+        <span class="fname"><img src="assets/portraits/${f.key}_base.png?v=${BUILD}" alt="">${f.def.name}${f.isCPU ? ' <em>CPU</em>' : ''}</span>
         <span>${f.stocks}</span><span>${f.stats.kos}</span><span>${f.stats.falls}</span>
         <span>${Math.round(f.stats.dealt)}%</span><span>${Math.round(f.stats.taken)}%</span>
       </div>`).join('');
@@ -278,7 +425,7 @@ const UI = (() => {
         </div>
       </div>
       <div class="rec"><h3>ROSTER</h3>
-        <div class="rosterrow">${FIGHTER_KEYS.map(k => `<div class="rchip ${s.unlocked.includes(k) ? '' : 'locked'}" style="--c:${FIGHTERS[k].color}"><img src="assets/portraits/${k}_base.png"><b>${FIGHTERS[k].name}</b></div>`).join('')}</div>
+        <div class="rosterrow">${FIGHTER_KEYS.map(k => `<div class="rchip ${s.unlocked.includes(k) ? '' : 'locked'}" style="--c:${FIGHTERS[k].color}"><img src="assets/portraits/${k}_base.png?v=${BUILD}" alt=""><b>${FIGHTERS[k].name}</b></div>`).join('')}</div>
       </div>
       ${buildCloudPanel()}
       <p class="hint">Earn Rift Coins by completing challenges. All fighters are unlocked from the start — the coin system tracks mastery progress.</p>`;
@@ -307,7 +454,7 @@ const UI = (() => {
         <h3>CLOUD SAVES</h3>
         <div class="cld">
           <div class="cld-row">
-            <button class="pill ${st.enabled ? 'on' : ''}" id="cloud-toggle">${st.enabled ? 'SYNCED TO CLOUD' : 'LOCAL ONLY'}</button>
+            <button class="pill ${st.enabled ? 'on' : ''}" id="cloud-toggle" aria-pressed="${!!st.enabled}">${st.enabled ? 'CLOUD: ENABLED' : 'CLOUD: DISABLED'}</button>
             <span class="cld-note">${note}</span>
           </div>
           <label class="cld-field"><span>PROJECT URL</span><input id="cloud-url" type="url" placeholder="https://xxxxxxxx.supabase.co" value="${cfg.url || ''}" autocomplete="off" spellcheck="false"></label>
@@ -366,8 +513,7 @@ const UI = (() => {
   function hideResults() { show('screen-match'); }
 
   function showCustomResults(cfg) {
-    $('#res-winner').innerHTML = `<img src="${cfg.img}" class="win-img" style="--c:${cfg.color}">
-      <div><h2 style="color:${cfg.color}">${cfg.title}</h2><p>${cfg.sub}</p></div>`;
+    $('#res-winner').innerHTML = `<div><h2 style="color:${cfg.color}">${cfg.title}</h2><p>${cfg.sub}</p></div>`;
     $('#res-table').innerHTML = `<div class="res-table">${cfg.lines.map(l => `<div class="rt" style="grid-template-columns:1fr"><span>${l}</span></div>`).join('')}</div>`;
     $('#res-challenges').innerHTML = '';
     $('#hud').style.display = 'none';
@@ -380,10 +526,31 @@ const UI = (() => {
     AUDIO.startMusic();
   }
 
+  /* ---------------- settings ---------------- */
+  function openSettings(from) {
+    settingsReturn = from;
+    renderSettings();
+    show('screen-settings');
+  }
+  function renderSettings() {
+    const settings = SAVE.data.settings;
+    $$('#screen-settings [data-setting]').forEach(button => {
+      const on = button.dataset.setting === 'master' ? !AUDIO.muted : settings[button.dataset.setting] !== false;
+      const selected = (button.dataset.value === 'on') === on;
+      button.classList.toggle('on', selected);
+      button.setAttribute('aria-pressed', selected);
+    });
+  }
+  function closeSettings() {
+    if (settingsReturn === 'screen-match') show('screen-match');
+    else openTitle();
+  }
+
   /* ---------------- playback / pause ---------------- */
   function setupMatchScreen() {
     $('#pause-overlay').classList.remove('on');
     $('#btn-resume').onclick = () => { Game.togglePause(false); };
+    $('#btn-pause-settings').onclick = () => openSettings('screen-match');
     $('#btn-restart').onclick = () => { Game.togglePause(false); Game.restart(); };
     $('#btn-quit').onclick = () => { Game.togglePause(false); Game.quitToMenu(); };
     $('#btn-pause').onclick = () => Game.togglePause(true);
@@ -394,10 +561,12 @@ const UI = (() => {
   function boot() {
     SAVE.load();
     INPUT.init();
+    document.addEventListener('click', e => { navigationTrigger = e.target.closest('button'); }, true);
     /* Printed on boot so "is my tab running the new code?" is a one-glance answer. */
     console.info('[rift] build ' + (typeof BUILD !== 'undefined' ? BUILD : '?'));
     buildTitle();
     buildSelect();
+    setupModePreviews();
     setupMatchScreen();
     $('#btn-vs').onclick = () => { AUDIO.sfx('confirm'); modeTarget = 'vs'; show('screen-select'); renderSelect(); };
     $$('#screen-title .modebtn').forEach(b => b.addEventListener('click', () => {
@@ -406,24 +575,43 @@ const UI = (() => {
       show('screen-select'); renderSelect();
     }));
     $('#btn-records').onclick = () => { AUDIO.sfx('menu'); buildRecords(); };
+    $('#btn-settings').onclick = () => { AUDIO.sfx('menu'); openSettings('screen-title'); };
+    $('#settings-back').onclick = closeSettings;
+    window.addEventListener('keydown', e => { if (e.code === 'KeyM' && !e.repeat && current === 'screen-settings' && !e.target.isContentEditable && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) setTimeout(renderSettings, 0); });
+    $$('#screen-settings [data-setting]').forEach(b => b.addEventListener('click', () => {
+      const key = b.dataset.setting;
+      const on = b.dataset.value === 'on';
+      if (key === 'master') {
+        if (on === AUDIO.muted) AUDIO.toggleMute();
+      } else {
+        SAVE.data.settings[key] = on;
+        SAVE.save();
+        if (key === 'music') {
+          if (!on) AUDIO.stopMusic();
+          else if (settingsReturn !== 'screen-match') AUDIO.startMusic();
+        }
+      }
+      AUDIO.sfx('menu'); renderSettings();
+    }));
     $('#records-back').onclick = () => { AUDIO.sfx('back'); openTitle(); };
     $('#btn-help').onclick = () => { AUDIO.sfx('menu'); show('screen-help'); };
     $('#help-back').onclick = () => { AUDIO.sfx('back'); openTitle(); };
     $('#btn-results-again').onclick = () => { AUDIO.sfx('confirm'); Game.restart(); };
-    $('#btn-results-char').onclick = () => { AUDIO.sfx('menu'); renderSelect(); show('screen-select'); };
     $('#btn-results-menu').onclick = () => { AUDIO.sfx('menu'); Modes.reset(); openTitle(); };
     $('#btn-results-char').onclick = () => { AUDIO.sfx('menu'); Modes.reset(); renderSelect(); show('screen-select'); };
     $('#sel-back').onclick = () => { AUDIO.sfx('back'); openTitle(); };
 
     window.addEventListener('ui-escape', () => {
+      navigationTrigger = null;
       if (current === 'screen-match') { Game.togglePause(); }
+      else if (current === 'screen-settings') { closeSettings(); }
       else if (['screen-select', 'screen-rules', 'screen-stage', 'screen-records', 'screen-help'].includes(current)) {
         if (current === 'screen-stage' || current === 'screen-rules') { renderSelect(); show('screen-select'); }
         else openTitle();
       }
     });
     window.addEventListener('ui-enter', () => {
-      if (current === 'screen-title') { AUDIO.sfx('confirm'); renderSelect(); show('screen-select'); }
+      if (current === 'screen-title' && document.activeElement.tagName !== 'BUTTON') { AUDIO.sfx('confirm'); modeTarget = 'vs'; renderSelect(); show('screen-select'); }
     });
     $('[data-toucha]') && $$('.touchbtn').forEach(b => {
       const key = b.dataset.touch;
@@ -502,49 +690,82 @@ const Game = (() => {
     if (match.paused) { AUDIO.stopMusic(); } else if (SAVE.data.settings.music) AUDIO.startMusic();
   }
 
+  const HUD_PLAYER_COLORS = ['#ff5260', '#52aaff', '#ffcf47', '#58dc8a'];
   function buildHUD() {
     const hud = $('#hud-slots');
     hud.innerHTML = '';
+    hud.dataset.count = match.fighters.length;
+    const matchup = $('#hud-matchup');
+    matchup.innerHTML = '';
+    matchup.style.display = match.fighters.length === 2 ? 'block' : 'none';
     match.fighters.forEach((f, i) => {
+      const color = HUD_PLAYER_COLORS[i % HUD_PLAYER_COLORS.length];
+      const player = 'P' + (i + 1);
       const d = document.createElement('div');
       d.className = 'hud-slot';
       d.id = 'hud-' + i;
-      d.style.setProperty('--c', f.pal.accent);
-      d.innerHTML = `<div class="hud-portrait"><img src="assets/portraits/${f.key}_base.png"></div>
-        <div class="hud-info">
-          <div class="hud-tag">${f.isCPU ? 'CPU' : 'P' + (i + 1)}${match.rules.teams ? ' · ' + ['RED', 'BLUE', 'GREEN', 'GOLD'][f.team] : ''}</div>
+      d.style.setProperty('--c', color);
+      d.innerHTML = `<div class="hud-portrait-wrap"><img class="hud-portrait" src="assets/portraits/${f.key}_base.png?v=${BUILD}" alt=""><span class="hud-player">${player}</span></div><div class="hud-info">
+          <div class="hud-tag">${f.def.name}${f.isCPU ? ' · CPU' : ''}</div>
           <div class="hud-dmg"><span class="pct">0</span><span class="pctsign">%</span></div>
-          <div class="hud-stocks">${renderStocks(f)}</div>
+          <div class="hud-stocks" aria-label="${f.stocks} stocks">${renderStocks(f, color)}</div>
         </div>`;
       hud.appendChild(d);
+      if (match.fighters.length === 2) {
+        const panel = document.createElement('div');
+        panel.className = 'matchup-panel ' + (i ? 'right' : 'left');
+        panel.id = 'matchup-' + i;
+        panel.style.setProperty('--c', color);
+        panel.innerHTML = `<img src="assets/portraits/${f.key}_base.png?v=${BUILD}" alt=""><div class="matchup-info">
+          <div class="matchup-name"><span>${player} · ${f.def.name}</span><span class="matchup-pct">0%</span></div>
+          <div class="damage-track" aria-label="Damage"><div class="damage-fill"></div></div>
+          <div class="matchup-bottom"><span>DAMAGE</span><span class="smash-status"><span class="smash-segments"><i></i><i></i><i></i><i></i></span> SMASH BALL</span></div>
+        </div>`;
+        matchup.appendChild(panel);
+      }
     });
-    $('#hud-timer').style.display = match.rules.mode === 'stock' ? 'none' : 'block';
+    $('#hud-timer small').textContent = match.rules.mode === 'stock' ? 'MODE' : 'TIME';
+    $('#hud-timer span').textContent = match.rules.mode === 'stock' ? 'STOCK' : formatMatchTime(match.matchTime);
   }
-  function renderStocks(f) {
-    return Array.from({ length: Math.max(0, f.stocks) }, () => `<i class="stockdot" style="background:${f.pal.accent}"></i>`).join('');
+  function renderStocks(f, color) {
+    return Array.from({ length: Math.max(0, f.stocks) }, () => `<i class="stockdot" style="background:${color}"></i>`).join('');
+  }
+  function formatMatchTime(frames) {
+    const seconds = Math.max(0, Math.ceil(frames / 60));
+    return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
   }
 
   let hudT = 0;
   function updateHUD() {
-    if (!match) return;
-    if (hudT++ % 3 !== 0) return;
+    if (!match || hudT++ % 3 !== 0) return;
     match.fighters.forEach((f, i) => {
       const el = document.getElementById('hud-' + i);
       if (!el) return;
       const pct = el.querySelector('.pct');
       const v = Math.floor(f.damage);
+      if (el.dataset.damage !== undefined && v > Number(el.dataset.damage)) {
+        el.classList.remove('damage-hit'); void el.offsetWidth; el.classList.add('damage-hit');
+      }
+      el.dataset.damage = v;
       pct.textContent = v;
-      // GDD color scale
       let col = '#ffffff';
-      if (v > 150) col = '#ff2a2a'; else if (v > 110) col = '#ff6a2a'; else if (v > 70) col = '#ffd23a'; else if (v > 35) col = '#ffe9a8';
+      if (v > 150) col = '#ff343d'; else if (v > 110) col = '#ff792f'; else if (v > 70) col = '#ffd23a'; else if (v > 35) col = '#ffe9a8';
       pct.style.color = col;
       pct.style.textShadow = v > 100 ? `0 0 ${12 + Math.sin(performance.now() * 0.01) * 6}px ${col}` : 'none';
-      el.querySelector('.hud-stocks').innerHTML = renderStocks(f);
+      const stocks = el.querySelector('.hud-stocks');
+      stocks.innerHTML = renderStocks(f, HUD_PLAYER_COLORS[i % HUD_PLAYER_COLORS.length]);
+      stocks.setAttribute('aria-label', Math.max(0, f.stocks) + ' stocks');
       el.classList.toggle('out', f.stocks <= 0);
       el.classList.toggle('lead', match.fighters.every(o => o === f || o.stocks < f.stocks));
+      const panel = document.getElementById('matchup-' + i);
+      if (panel) {
+        panel.querySelector('.matchup-pct').textContent = v + '%';
+        panel.querySelector('.damage-fill').style.width = Math.min(100, v / 2) + '%';
+        panel.querySelector('.smash-status').classList.toggle('ready', !!f.hasSmashBall);
+        panel.classList.toggle('out', f.stocks <= 0);
+      }
     });
-    const t = Math.max(0, Math.ceil(match.matchTime / 60));
-    $('#hud-timer span').textContent = t;
+    if (match.rules.mode !== 'stock') $('#hud-timer span').textContent = formatMatchTime(match.matchTime);
   }
 
   /* -------- camera intro sweep -------- */
@@ -643,8 +864,12 @@ const Game = (() => {
         ctx.beginPath(); ctx.ellipse(f.x, f.y + 10, 70, 18, 0, 0, TAU); ctx.fill();
         ctx.restore();
       }
-      if (!(Sprites.ready && Sprites.ready(f.key) && Sprites.drawSpriteFighter(ctx, f, match.time))) {
-        Sprites.drawFighter(ctx, f, match.time);
+      if (!Sprites.drawSpriteFighter(ctx, f, match.time)) {
+        // A simple marker keeps the match usable until the sheet has loaded.
+        const body = f.def.body || { w: 44, h: 104 };
+        ctx.save(); ctx.fillStyle = f.pal.primary;
+        ctx.fillRect(f.x - body.w * f.scale / 2, f.y - body.h * f.scale, body.w * f.scale, body.h * f.scale);
+        ctx.restore();
       }
       // final smash aura
       if (f.hasSmashBall) {
@@ -807,7 +1032,7 @@ const Game = (() => {
   }
 
   function drawNameTag(ctx, f, m) {
-    const y = f.y - 122 * f.scale;
+    const y = f.state === 'ledge' ? f.y + (Sprites.height(f.key) * 1.15 + 16) * f.scale : f.y - 122 * f.scale;
     ctx.save();
     ctx.globalAlpha = 0.85;
     ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';

@@ -39,7 +39,9 @@ class Camera {
     }
     this.tx = cx; this.ty = cy;
     let z = Math.min(this.W / w, this.H / h);
-    z = clamp(z, 0.42, 1.06);
+    // Large decks need room to zoom out on narrow viewports.
+    const minZoom = gd ? Math.min(0.42, this.W / (gd.w + 400)) : 0.42;
+    z = clamp(z, minZoom, 1.06);
     /* A camera that re-derives its scale every tick breathes: one fighter sprinting
        5px a tick widens the frame, the whole scene rescales by ~1%, and the stage
        visibly pulses under everybody's feet.  That is a second source of "stuttery"
@@ -80,6 +82,13 @@ class Match {
     this.rules = opts.rules;
     this.stageDef = STAGES[opts.stageKey] || STAGES.skyshrine;
     this.stage = JSON.parse(JSON.stringify(this.stageDef));
+    // Keep the usual blast zones on standard stages; XL decks need the same
+    // offstage recovery space beyond their wider edges.
+    const ground = this.stage.ground;
+    this.blast = Object.assign({}, WORLD.blast, {
+      left: this.stage.size === 'XL' ? Math.min(WORLD.blast.left, ground.x - 650) : WORLD.blast.left,
+      right: this.stage.size === 'XL' ? Math.max(WORLD.blast.right, ground.x + ground.w + 650) : WORLD.blast.right,
+    });
     // materialize moving platforms
     this.stage.platforms.forEach((p, i) => {
       p.baseX = p.x; p.baseY = p.y; p.phase = p.phase || 0;

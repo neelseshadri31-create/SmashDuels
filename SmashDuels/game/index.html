@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <title>RIFT RUMBLE — a platform fighter</title>
-<link rel="stylesheet" href="css/style.css?v=K13">
+<link rel="stylesheet" href="css/style.css?v=K24">
+<link rel="stylesheet" href="css/ui-refresh.css?v=K24">
+<link rel="stylesheet" href="css/ui-fx.css?v=K24">
 </head>
 <body>
 <div id="app">
@@ -13,14 +15,16 @@
   <!-- ================= MATCH HUD ================= -->
   <div id="hud">
     <div id="stage-name">SKY SHRINE</div>
-    <div id="hud-timer"><span>2:30</span></div>
+    <div id="hud-timer"><small>ROUND</small><span>2:30</span></div>
+    <div id="hud-matchup"></div>
     <button id="btn-pause" aria-label="Pause">❚❚</button>
     <div id="hud-slots"></div>
     <div id="pause-overlay">
       <div class="pause-card">
-        <h2>PAUSED</h2>
+        <div class="pause-kicker">MATCH INTERRUPTED / TAKE YOUR TIME</div><h2>PAUSED<span>.</span></h2>
         <button class="mbtn primary" id="btn-resume">RESUME<small>back to the fight</small></button>
         <button class="mbtn" id="btn-restart">RESTART<small>same fighters & rules</small></button>
+        <button class="mbtn" id="btn-pause-settings">SETTINGS<small>music & sound</small></button>
         <button class="mbtn" id="btn-quit">QUIT<small>return to title</small></button>
       </div>
     </div>
@@ -30,27 +34,27 @@
   <section class="screen active" id="screen-title">
     <div class="menu-bg"></div>
     <div class="center-wrap">
-      <div class="title-logo">
-        <div class="wordmark">RIFT <span>RUMBLE</span></div>
-        <div class="sub">A Platform Fighter</div>
-      </div>
-      <div class="title-meta" id="title-meta"></div>
-      <div class="main-menu">
-        <button class="mbtn primary" id="btn-vs">VS MODE<small>1–4 players · stocks · items · stages</small></button>
-        <div class="mode-grid">
-          <button class="mbtn modebtn" data-mode="classic">CLASSIC<small>5-stage gauntlet</small></button>
-          <button class="mbtn modebtn" data-mode="targets">TARGETS<small>break all 10</small></button>
-          <button class="mbtn modebtn" data-mode="homered">HOME-RUN<small>launch the bag</small></button>
-          <button class="mbtn modebtn" data-mode="multiman">MULTI-MAN<small>endless brawl</small></button>
+      <div class="home-masthead"><div class="title-logo"><div class="wordmark">RIFT <span>RUMBLE</span></div><div class="sub">THE PLATFORM FIGHTER</div></div><div class="title-meta" id="title-meta"></div></div>
+      <div class="home-layout">
+        <div class="home-content">
+          <div class="home-kicker"><span>01 / MAIN MENU</span><span>THE RIFT IS OPEN</span></div>
+          <h1 class="home-headline">PICK A<br><span>FIGHT.</span></h1>
+          <p class="home-intro">Choose your mode. Pick your fighter.<br>Make your mark in the rift.</p>
+          <div class="main-menu">
+            <button class="mbtn primary" id="btn-vs"><span class="tile-no">01 / BATTLE</span><strong>VS MODE</strong><small>1–4 players · stocks · stages</small></button>
+            <div class="mode-grid">
+              <button class="mbtn modebtn" data-mode="classic"><span class="tile-no">02</span><strong>CLASSIC</strong><small>5-stage gauntlet</small></button>
+              <button class="mbtn modebtn" data-mode="targets"><span class="tile-no">03</span><strong>TARGETS</strong><small>Break all 10</small></button>
+              <button class="mbtn modebtn" data-mode="homered"><span class="tile-no">04</span><strong>HOME-RUN</strong><small>Launch the bag</small></button>
+              <button class="mbtn modebtn" data-mode="multiman"><span class="tile-no">05</span><strong>MULTI-MAN</strong><small>Face 10 foes</small></button>
+            </div>
+          </div>
+          <div class="mode-preview" aria-live="polite"><span class="mode-preview-index">01 / BATTLE</span><span class="mode-preview-copy">A CUSTOM BATTLE FOR UP TO FOUR FIGHTERS</span><span class="mode-preview-mark" aria-hidden="true">◆</span></div>
+          <div class="home-utility"><button class="home-link" id="btn-records">RECORDS <span>↗</span></button><button class="home-link" id="btn-help">HOW TO PLAY <span>↗</span></button><button class="home-link" id="btn-settings">SETTINGS <span>↗</span></button></div>
         </div>
-        <button class="mbtn" id="btn-records">RECORDS<small>stats, challenges & roster</small></button>
-        <button class="mbtn" id="btn-help">HOW TO PLAY<small>controls & mechanics</small></button>
+        <div class="home-art" aria-hidden="true"><div class="home-art-label">FIVE FIGHTERS <span> / ONE RIFT</span></div><div class="home-art-number">05</div><img class="home-fighter home-fighter-back" src="assets/portraits/vesper_base.png?v=K24" alt=""><img class="home-fighter home-fighter-front" src="assets/portraits/valor_base.png?v=K24" alt=""><div class="home-art-caption">EVERY FIGHT<br><strong>STARTS HERE.</strong></div></div>
       </div>
-      <div class="keyhint">
-        <kbd>A</kbd><kbd>D</kbd> move · <kbd>W</kbd> jump · <kbd>S</kbd> crouch/fast-fall ·
-        <kbd>F</kbd> attack · <kbd>G</kbd> special · <kbd>C</kbd> shield · <kbd>V</kbd> grab<br>
-        P2: arrows + <kbd>Numpad 1</kbd> attack · <kbd>Numpad 2</kbd> special · <kbd>Numpad 3</kbd> jump · <kbd>Numpad 0</kbd> shield · <kbd>Numpad 4</kbd> grab
-      </div>
+      <div class="home-footer"><span>LOCAL BATTLE / 1–4 PLAYERS</span><span>KEYBOARD + GAMEPAD SUPPORTED</span></div>
     </div>
   </section>
 
@@ -71,13 +75,15 @@
       </div>
       <div class="panel right-panel">
         <div class="hero-top">
-          <div class="hero-portrait-wrap" id="hero-portrait-wrap"><img id="hero-portrait" alt=""></div>
+          <div class="hero-player" id="hero-player">P1 / PLAYER SELECT</div>
+          <img id="hero-portrait" class="hero-portrait" alt="">
           <div class="hero-names">
             <h2 id="hero-name">VALOR</h2>
             <div class="ttl" id="hero-title">THE SWORDSMAN</div>
             <div class="arch" id="hero-arch">All-Rounder</div>
           </div>
         </div>
+        <p id="hero-description" class="hero-description"></p>
         <div class="pal-row" id="pal-row"></div>
         <div class="movelist" id="hero-moves"></div>
         <div class="rowline">
@@ -102,6 +108,7 @@
   <section class="screen" id="screen-stage">
     <div class="menu-bg"></div>
     <div class="screen-head"><h1>STAGE SELECT</h1><div class="spacer"></div><button class="pill" id="stage-random">RANDOM</button></div>
+    <div class="stage-intro"><span>CHOOSE YOUR ARENA</span><span>XL stages offer more room to fight</span></div>
     <div class="stage-grid" id="stage-grid"></div>
     <div class="stage-actions">
       <button class="pill" id="stage-back">BACK</button>
@@ -129,6 +136,18 @@
     <div class="records-wrap" id="records-body"></div>
   </section>
 
+  <!-- ================= SETTINGS ================= -->
+  <section class="screen" id="screen-settings">
+    <div class="menu-bg"></div>
+    <div class="screen-head"><h1>SETTINGS</h1><span class="sub">MAKE IT YOURS</span><div class="spacer"></div><button class="pill" id="settings-back">BACK</button></div>
+    <div class="settings-wrap"><div class="settings-heading"><span>01 / AUDIO</span><h2>SET THE<br>VOLUME.</h2><p>Choose what you hear while you play.</p></div><div class="settings-list">
+      <div class="setting-row"><div><strong>MASTER SOUND</strong><small>Mute or unmute all audio</small></div><div class="seg" role="group" aria-label="Master sound"><button data-setting="master" data-value="on">ON</button><button data-setting="master" data-value="off">OFF</button></div></div>
+      <div class="setting-row"><div><strong>MUSIC</strong><small>Menu and match soundtrack</small></div><div class="seg" role="group" aria-label="Music"><button data-setting="music" data-value="on">ON</button><button data-setting="music" data-value="off">OFF</button></div></div>
+      <div class="setting-row"><div><strong>SOUND EFFECTS</strong><small>Hits, movement and menu cues</small></div><div class="seg" role="group" aria-label="Sound effects"><button data-setting="sfx" data-value="on">ON</button><button data-setting="sfx" data-value="off">OFF</button></div></div>
+      <div class="settings-note"><b>QUICK TIP</b><span>Press M at any time to mute or unmute all audio. Cloud save controls are in Records.</span></div>
+    </div></div>
+  </section>
+
   <!-- ================= HOW TO PLAY ================= -->
   <section class="screen" id="screen-help">
     <div class="menu-bg"></div>
@@ -143,10 +162,12 @@
         <h3>PLAYER 1</h3>
         <div class="klist">
           <div class="krow"><span>Move</span><span><kbd>A</kbd><kbd>D</kbd></span></div>
-          <div class="krow"><span>Jump / double jump</span><span><kbd>W</kbd> or <kbd>Space</kbd></span></div>
+          <div class="krow"><span>Jump / double jump</span><span><kbd>Space</kbd></span></div>
+          <div class="krow"><span>Aim up</span><span><kbd>W</kbd></span></div>
           <div class="krow"><span>Crouch / fast-fall / drop through</span><span><kbd>S</kbd></span></div>
           <div class="krow"><span>Attack (tilt / smash / aerial)</span><span><kbd>F</kbd></span></div>
           <div class="krow"><span>Special moves</span><span><kbd>G</kbd> + direction</span></div>
+          <div class="krow"><span>Up special / recovery</span><span><kbd>W</kbd> + <kbd>G</kbd> or <kbd>Space</kbd> + <kbd>G</kbd></span></div>
           <div class="krow"><span>Shield / air dodge</span><span><kbd>C</kbd></span></div>
           <div class="krow"><span>Grab / throw</span><span><kbd>V</kbd></span></div>
         </div>
@@ -154,9 +175,10 @@
       <div class="hcard">
         <h3>PLAYER 2</h3>
         <div class="klist">
-          <div class="krow"><span>Move / jump</span><span><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
+          <div class="krow"><span>Move / aim</span><span><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></span></div>
           <div class="krow"><span>Attack</span><span><kbd>Num 1</kbd></span></div>
           <div class="krow"><span>Special</span><span><kbd>Num 2</kbd></span></div>
+          <div class="krow"><span>Up special / recovery</span><span><kbd>↑</kbd> + <kbd>Num 2</kbd> or <kbd>Num 3</kbd> + <kbd>Num 2</kbd></span></div>
           <div class="krow"><span>Jump</span><span><kbd>Num 3</kbd></span></div>
           <div class="krow"><span>Shield</span><span><kbd>Num 0</kbd></span></div>
           <div class="krow"><span>Grab</span><span><kbd>Num 4</kbd></span></div>
@@ -175,7 +197,7 @@
       </div>
       <div class="hcard">
         <h3>RECOVERY</h3>
-        <p>Off-stage? You get your double jump plus one <b>Up + Special</b> recovery move. Touch a ledge from below to grab it, then climb, attack, roll or jump from it.</p>
+        <p>Off-stage? Use your double jump and one <b>Up + Special</b> or <b>Jump + Special</b> recovery per airtime. Landing or grabbing a ledge restores it. Catch a free ledge from outside; hold toward the stage or press up to climb, jump to leap, attack to get up attacking, shield to roll, or down to drop.</p>
         <p>Grabs beat shields. Shields beat attacks. Attacks beat grabs.</p>
       </div>
       <div class="hcard">
@@ -190,6 +212,7 @@
   <section class="screen" id="screen-results">
     <div class="menu-bg"></div>
     <div class="results-wrap">
+      <div class="results-kicker">MATCH COMPLETE <span> / </span> THE FINAL WORD</div>
       <div class="res-winner" id="res-winner"></div>
       <div class="res-table" id="res-table"></div>
       <div class="res-challenges" id="res-challenges"></div>
@@ -218,15 +241,15 @@
   </div>
 </div>
 
-<script src="js/core.js?v=K13"></script>
-<script src="js/data.js?v=K13"></script>
-<script src="js/render.js?v=K13"></script>
-<script src="js/fighter.js?v=K13"></script>
-<script src="js/items.js?v=K13"></script>
-<script src="js/ai.js?v=K13"></script>
-<script src="js/match.js?v=K13"></script>
-<script src="js/modes.js?v=K13"></script>
-<script src="js/cloud.js?v=K13"></script>
-<script src="js/ui.js?v=K13"></script>
+<script src="js/core.js?v=K24"></script>
+<script src="js/data.js?v=K24"></script>
+<script src="js/render.js?v=K24"></script>
+<script src="js/fighter.js?v=K24"></script>
+<script src="js/items.js?v=K24"></script>
+<script src="js/ai.js?v=K24"></script>
+<script src="js/match.js?v=K24"></script>
+<script src="js/modes.js?v=K24"></script>
+<script src="js/cloud.js?v=K24"></script>
+<script src="js/ui.js?v=K24"></script>
 </body>
 </html>

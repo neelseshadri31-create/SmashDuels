@@ -26,13 +26,14 @@ const FIGHTERS = {
 
   /* ---------------- VALOR ---------------- */
   valor: {
-    key: 'valor', artFacing: 1, name: 'VALOR', title: 'THE SWORDSMAN', archetype: 'All-Rounder',
+    key: 'valor', artFacing: 1, name: 'VALOR', title: 'THE RIFT BLADE', archetype: 'All-Rounder',
+    description: 'A blue-armored swordsman with a blazing orange scarf, cutting through the arena with swift cyan energy arcs.',
     color: '#4aa3ff', theme: '#4aa3ff',
     /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
        hurtbox test in tools/animtest.js): a box shorter than the art is how you get
        "I clearly hit their head and nothing happened". */
     body: { w: 46, h: 105 },
-    stats: { weight: 100, walk: 2.4, run: 5.4, air: 4.3, fall: 11.4, fastfall: 17.2, gravity: 0.62, jumps: 2, jumpV: 13.2, djumpV: 12.4, airJumps: 1, size: 1.0, traction: 0.55, airAccel: 0.34, dashFrames: 10 },
+    stats: { weight: 100, walk: 2.4, run: 6.5, air: 4.8, fall: 10.8, fastfall: 17.2, gravity: 0.56, jumps: 2, jumpV: 12.5, djumpV: 11.8, airJumps: 1, size: 1.0, traction: 0.55, airAccel: 0.34, dashFrames: 10 },
     locomotion: 'humanoid', weapon: 'sword', weaponLen: 46,
     palettes: [
       pal('Azure', '#f2c9a3', '#243049', '#2c4f95', '#cfe0f5', '#5aa9ff', '#1c3663'),
@@ -74,15 +75,16 @@ const FIGHTERS = {
   /* ---------------- GRIM ---------------- */
   grim: {
     key: 'grim', artFacing: 1, name: 'GRIM', title: 'THE COLOSSUS', archetype: 'Heavyweight',
-    color: '#ff9330', theme: '#ff9330',
+    description: 'A towering stone golem draped in moss and marked by glowing green runes, shattering the ground with massive fists.',
+    color: '#83d749', theme: '#83d749',
     /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
        hurtbox test in tools/animtest.js): a box shorter than the art is how you get
        "I clearly hit their head and nothing happened". */
     body: { w: 58, h: 124 },
-    stats: { weight: 138, walk: 1.9, run: 4.1, air: 2.9, fall: 13.6, fastfall: 21.5, gravity: 0.86, jumps: 2, jumpV: 13.6, djumpV: 12.2, airJumps: 1, size: 1.22, traction: 0.5, airAccel: 0.26, dashFrames: 14 },
+    stats: { weight: 138, walk: 1.9, run: 4.9, air: 3.3, fall: 12.9, fastfall: 21.5, gravity: 0.77, jumps: 2, jumpV: 12.9, djumpV: 11.6, airJumps: 1, size: 1.22, traction: 0.5, airAccel: 0.26, dashFrames: 14 },
     locomotion: 'brute', weapon: 'fists', weaponLen: 0,
     palettes: [
-      pal('Stone', '#9aa0a8', '#3a3f46', '#6b7280', '#b8bfc8', '#ff9330', '#4b5158'),
+      pal('Stone', '#9aa0a8', '#3a3f46', '#6b7280', '#b8bfc8', '#83d749', '#4b5158'),
       pal('Rust', '#a8867a', '#3d2a22', '#8a4a2f', '#c9a48e', '#ff7a2a', '#5a2f1e'),
       pal('Moss', '#93a08a', '#2f3a2a', '#55704a', '#a8bf9a', '#c8ff6a', '#33422c'),
       pal('Slate', '#8f9aad', '#2a3242', '#4a5b78', '#a8b8d0', '#5aa9ff', '#2c3849'),
@@ -107,7 +109,7 @@ const FIGHTERS = {
     specials: {
       neutral: { name: 'MAGMA FIST', desc: 'Heavy fireball', type: 'projectile', frames: 48, startup: 14, damage: 12, bkb: 20, kbs: 52, angle: 35, cooldown: 34, big: 1 },
       side: { name: 'RUSH STRIKE', desc: 'Shoulder charge', type: 'dash', frames: 52, startup: 12, damage: 16, bkb: 30, kbs: 62, angle: 38, dist: 170, active: 14, hitboxes: [hb(-8, -78, 76, 62)] },
-      up: { name: 'SKYWARD ASCENT', desc: 'Erupting uppercut', type: 'recover', frames: 48, startup: 4, damage: 13, bkb: 22, kbs: 50, angle: 85, rise: 9.8, drift: 3.2 },
+      up: { name: 'TITAN RISE', desc: 'Erupting uppercut', type: 'recover', frames: 48, startup: 4, damage: 13, bkb: 22, kbs: 50, angle: 85, rise: 9.8, drift: 3.2 },
       down: { name: 'GUARDIAN STANCE', desc: 'Stone guard + quake', type: 'counter', frames: 46, startup: 1, window: 22, mult: 1.5 },
     },
     finalSmash: { name: 'CONTINENTAL SLAM', type: 'slam', duration: 150, damage: 48 },
@@ -117,12 +119,13 @@ const FIGHTERS = {
   /* ---------------- ASTRA ---------------- */
   astra: {
     key: 'astra', artFacing: 1, name: 'ASTRA', title: 'THE STARWEAVER', archetype: 'Floaty Zoner',
+    description: 'A hooded star mage with flowing blue hair and golden gauntlets, weaving radiant spells and sweeping comet trails.',
     color: '#c77dff', theme: '#c77dff',
     /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
        hurtbox test in tools/animtest.js): a box shorter than the art is how you get
        "I clearly hit their head and nothing happened". */
     body: { w: 42, h: 101 },
-    stats: { weight: 76, walk: 2.1, run: 4.3, air: 3.5, fall: 7.4, fastfall: 11.6, gravity: 0.4, jumps: 3, jumpV: 12.6, djumpV: 11.4, airJumps: 2, size: 0.97, traction: 0.42, airAccel: 0.3, dashFrames: 9 },
+    stats: { weight: 76, walk: 2.1, run: 5.2, air: 3.9, fall: 7.0, fastfall: 11.6, gravity: 0.36, jumps: 3, jumpV: 12.0, djumpV: 10.8, airJumps: 2, size: 0.97, traction: 0.42, airAccel: 0.3, dashFrames: 9 },
     locomotion: 'mage', weapon: 'staff', weaponLen: 52,
     palettes: [
       pal('Violet', '#f6d2b8', '#e8e6ef', '#6b3aa8', '#2a1548', '#c77dff', '#3d2064'),
@@ -160,12 +163,13 @@ const FIGHTERS = {
   /* ---------------- VESPER ---------------- */
   vesper: {
     key: 'vesper', artFacing: 1, name: 'VESPER', title: 'THE SHADE', archetype: 'Rushdown',
+    description: 'A masked shadow fighter in dark armor and a bright blue scarf, striking with lightning-fast blue energy blades.',
     color: '#2fd6bb', theme: '#2fd6bb',
     /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
        hurtbox test in tools/animtest.js): a box shorter than the art is how you get
        "I clearly hit their head and nothing happened". */
     body: { w: 40, h: 100 },
-    stats: { weight: 72, walk: 2.9, run: 6.7, air: 5.1, fall: 11.8, fastfall: 18.4, gravity: 0.68, jumps: 2, jumpV: 12.8, djumpV: 12.2, airJumps: 1, size: 0.94, traction: 0.6, airAccel: 0.4, dashFrames: 8 },
+    stats: { weight: 72, walk: 2.9, run: 8.0, air: 5.7, fall: 11.2, fastfall: 18.4, gravity: 0.61, jumps: 2, jumpV: 12.2, djumpV: 11.6, airJumps: 1, size: 0.94, traction: 0.6, airAccel: 0.4, dashFrames: 8 },
     locomotion: 'ninja', weapon: 'daggers', weaponLen: 26,
     palettes: [
       pal('Jade', '#e8c0a0', '#1a2a26', '#1f6b5c', '#0d2a24', '#2fd6bb', '#12443a'),
@@ -202,16 +206,17 @@ const FIGHTERS = {
 
   /* ---------------- ROOK ---------------- */
   rook: {
-    key: 'rook', artFacing: 1, name: 'ROOK', title: 'THE HEXSHOT', archetype: 'Projectile Zoner',
-    color: '#22e08a', theme: '#22e08a',
+    key: 'rook', artFacing: 1, name: 'ROOK', title: 'THE RIFT BRAWLER', archetype: 'Projectile Zoner',
+    description: 'A red-scarved martial artist with wrapped fists, unleashing rapid punches, sweeping kicks, and blue energy blasts.',
+    color: '#f05c4d', theme: '#f05c4d',
     /* hurtbox, in px at scale 1.  Height tracks the drawn sprite (see the
        hurtbox test in tools/animtest.js): a box shorter than the art is how you get
        "I clearly hit their head and nothing happened". */
     body: { w: 48, h: 103 },
-    stats: { weight: 94, walk: 2.3, run: 4.8, air: 3.7, fall: 11.6, fastfall: 17.6, gravity: 0.64, jumps: 2, jumpV: 13.0, djumpV: 12.2, airJumps: 1, size: 1.04, traction: 0.5, airAccel: 0.32, dashFrames: 10 },
+    stats: { weight: 94, walk: 2.3, run: 5.8, air: 4.1, fall: 11.0, fastfall: 17.6, gravity: 0.58, jumps: 2, jumpV: 12.4, djumpV: 11.6, airJumps: 1, size: 1.04, traction: 0.5, airAccel: 0.32, dashFrames: 10 },
     locomotion: 'gunner', weapon: 'rifle', weaponLen: 54,
     palettes: [
-      pal('Verdant', '#e0b898', '#2a2018', '#1d4a3a', '#0f2a22', '#22e08a', '#142e26'),
+      pal('Scarlet', '#e0b898', '#2a2018', '#9a2834', '#2a1920', '#f05c4d', '#142e26'),
       pal('Rust', '#e8c0a0', '#3a2418', '#8a4a2a', '#4a2410', '#ffa04a', '#5c3018'),
       pal('Bone', '#f0d8c0', '#e8e2d8', '#c8bfa8', '#8a8270', '#fff0c0', '#a89e88'),
       pal('Royal', '#e8c4a4', '#1a1a30', '#2a3a8a', '#141c4a', '#6a9aff', '#1c2858'),
@@ -219,9 +224,9 @@ const FIGHTERS = {
       pal('Onyx', '#c0a088', '#14141a', '#1e2228', '#0c0e12', '#ffd23a', '#101318'),
     ],
     moves: {
-      jab: mv({ name: 'Rifle Butt', frames: 24, startup: 3, active: 3, damage: 4, bkb: 8, kbs: 24, angle: 34, hitboxes: [hb(12, -62, 54, 32)] }),
-      ftilt: mv({ name: 'Bayonet Sweep', frames: 32, startup: 6, active: 4, damage: 8, bkb: 16, kbs: 48, angle: 33, hitboxes: [hb(14, -70, 62, 44)] }),
-      utilt: mv({ name: 'Stock Upper', frames: 32, startup: 5, active: 5, damage: 7, bkb: 18, kbs: 54, angle: 94, hitboxes: [hb(-24, -114, 74, 56)] }),
+      jab: mv({ name: 'Driving Punch', frames: 24, startup: 3, active: 3, damage: 4, bkb: 8, kbs: 24, angle: 34, hitboxes: [hb(12, -62, 54, 32)] }),
+      ftilt: mv({ name: 'Sweeping Strike', frames: 32, startup: 6, active: 4, damage: 8, bkb: 16, kbs: 48, angle: 33, hitboxes: [hb(14, -70, 62, 44)] }),
+      utilt: mv({ name: 'Rising Uppercut', frames: 32, startup: 5, active: 5, damage: 7, bkb: 18, kbs: 54, angle: 94, hitboxes: [hb(-24, -114, 74, 56)] }),
       dtilt: mv({ name: 'Low Shot', frames: 30, startup: 5, active: 4, damage: 6, bkb: 14, kbs: 38, angle: 18, hitboxes: [hb(12, -24, 56, 28)] }),
       dashattack: mv({ name: 'Sliding Shot', frames: 38, startup: 6, active: 11, damage: 9, bkb: 20, kbs: 44, angle: 40, hitboxes: [hb(4, -84, 66, 70)] }),
       fsmash: mv({ name: 'Charged Hex Blast', frames: 56, startup: 15, active: 5, damage: 16, bkb: 28, kbs: 86, angle: 34, charge: 1, hitboxes: [hb(10, -78, 92, 66)] }),
@@ -231,12 +236,12 @@ const FIGHTERS = {
       fair: mv({ name: 'Fair', frames: 36, startup: 7, active: 5, damage: 10, bkb: 16, kbs: 58, angle: 40, hitboxes: [hb(12, -86, 76, 60)] }),
       bair: mv({ name: 'Bair', frames: 34, startup: 6, active: 4, damage: 11, bkb: 18, kbs: 64, angle: 148, hitboxes: [hb(-82, -80, 70, 54)] }),
       uair: mv({ name: 'Uair', frames: 32, startup: 5, active: 6, damage: 8, bkb: 12, kbs: 50, angle: 88, hitboxes: [hb(-34, -120, 74, 56)] }),
-      dair: mv({ name: 'Rifle Slam', frames: 38, startup: 8, active: 5, damage: 11, bkb: 16, kbs: 54, angle: 264, hitboxes: [hb(-24, -16, 52, 60)], spike: 1 }),
+      dair: mv({ name: 'Falling Fist', frames: 38, startup: 8, active: 5, damage: 11, bkb: 16, kbs: 54, angle: 264, hitboxes: [hb(-24, -16, 52, 60)], spike: 1 }),
     },
     specials: {
       neutral: { name: 'HEX BULLET VOLLEY', desc: '3-round burst', type: 'projectile', frames: 44, startup: 10, damage: 4, bkb: 8, kbs: 26, angle: 34, cooldown: 26, burst: 3 },
       side: { name: 'RUNE LASSO', desc: 'Pulling hex chain', type: 'lasso', frames: 46, startup: 12, damage: 7, bkb: 16, kbs: 36, angle: 30, dist: 230 },
-      up: { name: 'DRONE GRAPPLE', desc: 'Tether recovery', type: 'recover', frames: 44, startup: 5, damage: 6, bkb: 12, kbs: 34, angle: 84, rise: 8.6, drift: 5.4 },
+      up: { name: 'DRONE GRAPPLE', desc: 'Drone-assisted rising boost', type: 'recover', frames: 44, startup: 5, damage: 6, bkb: 12, kbs: 34, angle: 84, rise: 8.6, drift: 5.4 },
       down: { name: 'RUNE MINE', desc: 'Placed proximity trap', type: 'mine', frames: 40, startup: 12, damage: 11, bkb: 20, kbs: 52, angle: 60, cooldown: 44 },
     },
     finalSmash: { name: 'HEX BARRAGE', type: 'bullethell', duration: 160, damage: 44 },
@@ -323,6 +328,36 @@ for (const k of FIGHTER_KEYS) {
    STAGES
    ============================================================ */
 const STAGES = {
+  grandrift: {
+    key: 'grandrift', name: 'GRAND RIFT', sub: 'XL · wide open battlefield', theme: 'rift', size: 'XL',
+    bg: ['#110c28', '#27214e', '#4e3979'], accent: '#d38cff',
+    ground: { x: -1100, y: 0, w: 2200, h: 44 },
+    platforms: [
+      { x: -750, y: -170, w: 260, h: 18 },
+      { x: -130, y: -170, w: 260, h: 18 },
+      { x: 490, y: -170, w: 260, h: 18 },
+      { x: -440, y: -320, w: 240, h: 18 },
+      { x: 200, y: -320, w: 240, h: 18 },
+    ], ledges: true, hazard: null,
+  },
+  colossalstadium: {
+    key: 'colossalstadium', name: 'COLOSSAL STADIUM', sub: 'XL · five-platform arena', theme: 'arena', size: 'XL',
+    bg: ['#071b20', '#13413c', '#276d63'], accent: '#55f1c4',
+    ground: { x: -1000, y: 0, w: 2000, h: 44 },
+    platforms: [
+      { x: -740, y: -165, w: 250, h: 18 },
+      { x: -125, y: -165, w: 250, h: 18 },
+      { x: 490, y: -165, w: 250, h: 18 },
+      { x: -450, y: -310, w: 220, h: 18 },
+      { x: 230, y: -310, w: 220, h: 18 },
+    ], ledges: true, hazard: null,
+  },
+  horizon: {
+    key: 'horizon', name: 'HORIZON DECK', sub: 'XL · flat, no hazards', theme: 'comet', size: 'XL',
+    bg: ['#0b102b', '#202b5d', '#424a87'], accent: '#81c8ff',
+    ground: { x: -900, y: 0, w: 1800, h: 44 }, platforms: [],
+    ledges: true, hazard: null,
+  },
   skyshrine: {
     key: 'skyshrine', name: 'SKY SHRINE', sub: 'Balanced · 3 platforms', theme: 'shrine',
     bg: ['#0d1830', '#1b2f52', '#31547f'], accent: '#5aa9ff',
